@@ -1,0 +1,500 @@
+/* =============================================================================
+ * Halaman PENGGUNA & PENGATURAN
+ * ========================================================================== */
+
+(function () {
+  'use strict';
+
+  var App = window.App;
+  var api = App.api;
+  var esc = App.esc;
+
+  window.Pages = window.Pages || {};
+
+  var users = [];
+  var ROLES = [
+    { key: 'admin', label: 'Administrator (akses penuh)' },
+    { key: 'hr', label: 'HR (kelola karyawan & shift)' },
+    { key: 'operator', label: 'Operator (absensi & perangkat)' },
+    { key: 'viewer', label: 'Viewer (hanya lihat & unduh laporan)' },
+    { key: 'employee', label: 'Karyawan (portal mandiri, data sendiri)' },
+  ];
+
+  var employees = [];
+
+  // ============================================================ PENGGUNA
+
+  window.Pages.users = function (root) {
+    root.innerHTML =
+      '<div class="card">' +
+        '<div class="card-header">' +
+          '<div><h2 class="card-title">Akun Pengguna Aplikasi</h2>' +
+          '<p class="card-subtitle">Akun dipakai untuk masuk ke sistem, terpisah dari data karyawan</p></div>' +
+          '<div class="btn-group">' +
+            '<button class="btn primary" id="userAdd">+ Tambah Akun</button>' +
+            '<button class="btn" id="userReload">&#8635; Muat Ulang</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card-body tight" id="userTable">' + App.loading('Memuat akun...') + '</div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<div class="card-header"><div><h2 class="card-title">Peran & Hak Akses</h2></div></div>' +
+        '<div class="card-body tight">' + App.table([
+          { key: 'label', label: 'Peran' },
+          { key: 'desc', label: 'Kemampuan' },
+        ], [
+          { label: 'Administrator', desc: 'Akses penuh termasuk hapus karyawan, kelola mesin, dan kelola akun pengguna.' },
+          { label: 'HR', desc: 'Kelola karyawan, shift, jadwal, izin, koreksi rekap, dan kirim notifikasi.' },
+          { label: 'Operator', desc: 'Lihat absensi, jalankan sinkronisasi mesin, tambah log manual, dan koreksi rekap.' },
+          { label: 'Viewer', desc: 'Hanya melihat dashboard, absensi, dan mengunduh laporan.' },
+          { label: 'Karyawan', desc: 'Hanya membuka Portal Saya: rekap kehadiran sendiri, pengajuan izin/cuti, dan check-in dinas luar kota.' },
+        ], { empty: '' }) + '</div>' +
+      '</div>';
+
+    document.getElementById('userAdd').addEventListener('click', function () { openUserForm(null); });
+    document.getElementById('userReload').addEventListener('click', load);
+
+    document.getElementById('userTable').addEventListener('click', function (ev) {
+      var btn = ev.target.closest('button[data-act]');
+      if (!btn) return;
+      var id = Number(btn.getAttribute('data-id'));
+      var act = btn.getAttribute('data-act');
+      var user = users.find(function (u) { return u.id === id; });
+      if (!user) return;
+      if (act === 'edit') openUserForm(user);
+      else if (act === 'toggle') doToggle(user);
+    });
+
+    load();
+  };
+
+  function load() {
+    var box = document.getElementById('userTable');
+    box.innerHTML = App.loading('Memuat akun...');
+
+    api.get('/auth/users')
+      .then(function (res) {
+        users = res.data || [];
+        paint();
+        return loadEmployeeOptions();
+      })
+      .catch(function (err) {
+        box.innerHTML = '<div class="empty-state"><div class="big">&#9888;</div><div>' + esc(err.message) + '</div></div>';
+      });
+  }
+
+  /** Daftar karyawan untuk dipilih saat membuat akun role employee. */
+  function loadEmployeeOptions() {
+    return api
+      .get('/employees', { per_page: 500, status: 'aktif' })
+      .then(function (res) {
+        employees = res.data || [];
+      })
+      .catch(function () {
+        employees = [];
+      });
+  }
+
+  function employeeOptions(selectedId) {
+    var options = employees.map(function (e) {
+      return (
+        '<option value="' + e.id + '"' +
+        (Number(selectedId) === Number(e.id) ? ' selected' : '') +
+        '>' + esc(e.employee_code + ' - ' + e.name) + '</option>'
+      );
+    });
+    return options.join('');
+  }
+
+  function paint() {
+    var box = document.getElementById('userTable');
+    var currentId = App.state.user && App.state.user.id;
+
+    var columns = [
+      { key: 'username', label: 'Username', mono: true },
+      { key: 'full_name', label: 'Nama Lengkap' },
+      { key: 'role', label: 'Peran', render: function (r) {
+        var map = { admin: 'danger', hr: 'info', operator: 'warning', viewer: 'idle', employee: 'dinas_luar' };
+        return '<span class="badge ' + (map[r.role] || 'idle') + '">' + esc(r.role) + '</span>';
+      } },
+      { key: 'employee_name', label: 'Data Karyawan', render: function (r) {
+        return r.employee_name
+          ? esc(r.employee_code + ' - ' + r.employee_name)
+          : '<span class="faint">-</span>';
+      } },
+      { key: 'is_active', label: 'Status', render: function (r) {
+        return Number(r.is_active) === 1
+          ? '<span class="badge success">Aktif</span>'
+          : '<span class="badge failed">Nonaktif</span>';
+      } },
+      { key: 'last_login_at', label: 'Login Terakhir', render: function (r) {
+        return r.last_login_at ? '<span class="small">' + esc(App.fmtRelative(r.last_login_at)) + '</span>' : '<span class="faint">belum pernah</span>';
+      } },
+      { key: 'created_at', label: 'Dibuat', render: function (r) {
+        return '<span class="small faint">' + esc(App.fmtDate(r.created_at)) + '</span>';
+      } },
+      { key: 'aksi', label: 'Aksi', width: '190px', render: function (r) {
+        if (r.id === currentId) return '<span class="small faint">akun Anda</span>';
+        return '<div class="btn-group">' +
+          '<button class="btn sm" data-act="edit" data-id="' + r.id + '">Ubah</button>' +
+          '<button class="btn sm ' + (Number(r.is_active) === 1 ? 'danger' : 'success') + '" data-act="toggle" data-id="' + r.id + '">' +
+            (Number(r.is_active) === 1 ? 'Nonaktifkan' : 'Aktifkan') +
+          '</button>' +
+        '</div>';
+      } },
+    ];
+
+    box.innerHTML = App.table(columns, users, { empty: 'Belum ada akun.', emptyIcon: '&#128100;' });
+  }
+
+  function openUserForm(user) {
+    var isEdit = Boolean(user);
+    var minLength = 8;
+
+    App.modal({
+      title: isEdit ? 'Ubah Akun: ' + user.username : 'Tambah Akun Pengguna',
+      bodyHtml:
+        '<div class="form-grid">' +
+          '<div class="field" style="grid-column:1/-1"><label>Peran <span class="req">*</span></label><select id="uRole">' +
+            ROLES.map(function (r) {
+              return '<option value="' + r.key + '"' + (isEdit && user.role === r.key ? ' selected' : '') + '>' + esc(r.label) + '</option>';
+            }).join('') +
+          '</select></div>' +
+          '<div class="field" id="uEmpField" style="grid-column:1/-1"' + (isEdit && user.role !== 'employee' ? ' hidden' : '') + '>' +
+            '<label>Data Karyawan <span class="req">*</span></label>' +
+            '<select id="uEmployee"><option value="">-- Pilih karyawan --</option>' +
+              employeeOptions(isEdit ? user.employee_id : null) +
+            '</select>' +
+            '<span class="help">Satu karyawan hanya boleh punya satu akun portal.</span>' +
+          '</div>' +
+          '<div class="callout" id="uEmpHint" style="grid-column:1/-1"' +
+            (isEdit && user.role !== 'employee' ? ' hidden' : '') +
+          '>Peran Karyawan hanya melihat data miliknya sendiri di Portal Saya.</div>' +
+          '<div class="field"><label>Username <span class="req">*</span></label>' +
+            '<input type="text" id="uName" value="' + esc(isEdit ? user.username : '') + '"' + (isEdit ? ' disabled' : '') + '>' +
+            (isEdit ? '<span class="help">Username tidak dapat diubah.</span>' : '') +
+          '</div>' +
+          '<div class="field"><label>Nama Lengkap <span class="req">*</span></label>' +
+            '<input type="text" id="uFull" value="' + esc(isEdit ? user.full_name : '') + '"></div>' +
+          '<div class="field" style="grid-column:1/-1"><label>' + (isEdit ? 'Password Baru' : 'Password <span class="req">*</span>') + '</label>' +
+            '<input type="password" id="uPass" autocomplete="new-password" placeholder="Minimal ' + minLength + ' karakter">' +
+            (isEdit ? '<span class="help">Kosongkan bila tidak ingin mengubah password.</span>' : '') +
+          '</div>' +
+        '</div>' +
+        (isEdit ? '<div class="field checkbox mt"><input type="checkbox" id="uActive"' + (Number(user.is_active) === 1 ? ' checked' : '') + '>' +
+          '<label for="uActive">Akun aktif</label></div>' : ''),
+onMount: function (modalEl) {
+        var role = modalEl.querySelector('#uRole');
+        var field = modalEl.querySelector('#uEmpField');
+        var hint = modalEl.querySelector('#uEmpHint');
+        var employeeSelect = modalEl.querySelector('#uEmployee');
+        var fullName = modalEl.querySelector('#uFull');
+        var username = modalEl.querySelector('#uName');
+
+        function findEmployee(id) {
+          for (var i = 0; i < employees.length; i += 1) {
+            if (Number(employees[i].id) === Number(id)) return employees[i];
+          }
+          return null;
+        }
+
+        // Nama lengkap dan username terisi otomatis dari karyawan yang dipilih,
+        // selama kedua kolom itu belum diketik sendiri oleh pengguna.
+        function fillFromEmployee() {
+          var emp = findEmployee(employeeSelect.value);
+          if (!emp) return;
+          if (!username.value.trim()) username.value = emp.employee_code;
+          if (!fullName.value.trim()) fullName.value = emp.name;
+        }
+
+        function sync() {
+          var isEmployee = role.value === 'employee';
+          field.hidden = !isEmployee;
+          if (hint) hint.hidden = !isEmployee;
+          if (isEmployee) fillFromEmployee();
+        }
+
+        role.addEventListener('change', sync);
+        employeeSelect.addEventListener('change', fillFromEmployee);
+        sync();
+      },
+      actions: [
+        { label: 'Batal' },
+        {
+          label: isEdit ? 'Simpan Perubahan' : 'Simpan Akun',
+          className: 'primary',
+          onClick: function (el) {
+            var fullName = el.querySelector('#uFull').value.trim();
+            var role = el.querySelector('#uRole').value;
+            var password = el.querySelector('#uPass').value;
+            var employeeId = el.querySelector('#uEmployee').value;
+
+            if (!fullName) { App.toast('Nama lengkap wajib diisi.', 'error'); return false; }
+            if (!isEdit && password.length < minLength) { App.toast('Password minimal ' + minLength + ' karakter.', 'error'); return false; }
+            if (isEdit && password && password.length < minLength) { App.toast('Password minimal ' + minLength + ' karakter.', 'error'); return false; }
+
+            if (role === 'employee' && !employeeId) {
+              App.toast('Pilih data karyawan untuk peran Karyawan.', 'error');
+              return false;
+            }
+
+            var payload = { full_name: fullName, role: role };
+            if (role === 'employee') {
+              payload.employee_id = Number(employeeId);
+            } else {
+              // Non-karyawan tidak boleh tertaut ke data karyawan.
+              payload.employee_id = null;
+            }
+            if (password) payload.password = password;
+            if (isEdit) payload.is_active = el.querySelector('#uActive').checked ? 1 : 0;
+
+            var request = isEdit
+              ? api.put('/auth/users/' + user.id, payload)
+              : api.post('/auth/users', {
+                  username: el.querySelector('#uName').value.trim(),
+                  full_name: fullName,
+                  role: role,
+                  employee_id: role === 'employee' ? Number(employeeId) : null,
+                  password: password,
+                });
+
+            request
+              .then(function () {
+                App.toast(isEdit ? 'Akun diperbarui.' : 'Akun dibuat.', 'success');
+                el.closeModal();
+                load();
+              })
+              .catch(function (err) {
+                App.toast(err.message, 'error');
+                return false;
+              });
+            return false;
+          },
+        },
+      ],
+    });
+  }
+
+  function doToggle(user) {
+    var next = Number(user.is_active) === 1 ? 0 : 1;
+    App.confirm({
+      title: next === 1 ? 'Aktifkan akun' : 'Nonaktifkan akun',
+      heading: (next === 1 ? 'Aktifkan ' : 'Nonaktifkan ') + user.full_name + '?',
+      message: next === 1 ? 'Akun bisa masuk kembali ke sistem.' : 'Akun tidak akan bisa masuk. Sesi yang sedang berjalan akan ditolak.',
+      danger: next === 0,
+      confirmLabel: next === 1 ? 'Aktifkan' : 'Nonaktifkan',
+      onConfirm: function () {
+        api.put('/auth/users/' + user.id, { is_active: next })
+          .then(function () {
+            App.toast('Status akun diperbarui.', 'success');
+            load();
+          })
+          .catch(function (err) { App.toast(err.message, 'error'); });
+      },
+    });
+  }
+
+  // ============================================================ PENGATURAN
+
+  // Tab "Status Sistem" dipakai ulang oleh halaman Pengaturan (pages/settings.js).
+  window.Pages.settingsStatus = function (root) {
+    root.innerHTML = App.loading('Memuat pengaturan...');
+
+    Promise.all([
+      api.get('/devices/protocols'),
+      api.get('/attendance/notify/status'),
+      api.get('/devices/status'),
+    ]).then(function (res) {
+      var push = res[0].data || {};
+      var notify = res[1].data || {};
+      var sync = res[2].data || {};
+
+      root.innerHTML =
+        '<div class="grid-2">' +
+
+          '<div class="card">' +
+            '<div class="card-header"><div><h2 class="card-title">Server &amp; Jaringan</h2>' +
+            '<p class="card-subtitle">Informasi koneksi untuk mesin fingerprint</p></div></div>' +
+            '<div class="card-body">' +
+              App.table([{ key: 'label', label: 'Konfigurasi' }, { key: 'value', label: 'Nilai' }], [
+                { label: 'Alamat Server (untuk mesin PUSH)', value: (push.push && push.push.server_address_hint) || '-' },
+                { label: 'Port PUSH / ADMS', value: (push.push && push.push.port) || '-' },
+                { label: 'Autentikasi PUSH', value: (push.push && push.push.auth_token_required) ? 'Diaktifkan (token wajib)' : 'Tidak ada (batasi akses jaringan)' },
+              ], { empty: '-' }) +
+              '<div class="callout mt"><strong>Mode mesin fingerprint yang didukung</strong>' +
+              '<strong>1. TCP (Polling)</strong> Aplikasi yang connects ke mesin pada port 4370 lalu menarik log secara berkala. Cocok untuk mesin yang hanya bisa dikonfigurasi mode "Ethernet / Standalone SDK".<br>' +
+              '<strong>2. PUSH / ADMS</strong> Mesin yang mengirim log ke server secara otomatis. Cocok untuk menu "Comm / ADMS / Cloud Server".<br>' +
+              '<strong>3. Impor File</strong> Unduh log dari software vendor (Excel/CSV), lalu impor lewat menu Perangkat.</div>' +
+            '</div>' +
+          '</div>' +
+
+          '<div class="card">' +
+            '<div class="card-header"><div><h2 class="card-title">Sinkronisasi Otomatis</h2>' +
+            '<p class="card-subtitle">Status penjadwal di server</p></div></div>' +
+            '<div class="card-body">' +
+              App.table([{ key: 'label', label: 'Informasi' }, { key: 'value', label: 'Nilai' }], [
+                { label: 'Status', value: sync.running ? '<span class="badge success">Aktif</span>' : '<span class="badge idle">Tidak aktif</span>' },
+                { label: 'Periode', value: sync.interval_minutes ? 'Setiap ' + sync.interval_minutes + ' menit' : '-' },
+                { label: 'Terakhir berjalan', value: sync.last_run_at ? App.fmtRelative(sync.last_run_at) : 'belum pernah' },
+                { label: 'Selesai terakhir', value: sync.last_finished_at ? App.fmtRelative(sync.last_finished_at) : '-' },
+                { label: 'Total siklus', value: App.formatNumber(sync.total_runs || 0) },
+              ], { empty: 'Informasi penjadwal tidak tersedia.' }) +
+              '<div class="callout success mt"><strong>Sinkronisasi berjalan di server</strong>' +
+              'Tidak perlu membuka browser. Selama proses Node.js berjalan, mesin ditarik log secara otomatis. ' +
+              'Interval diatur lewat variabel <code>SYNC_INTERVAL_MINUTES</code> di berkas <code>.env</code>.</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card">' +
+          '<div class="card-header"><div><h2 class="card-title">Notifikasi WhatsApp &amp; Email</h2>' +
+          '<p class="card-subtitle">Status konfigurasi kanal pesan</p></div>' +
+          (App.can('notify:send') ? '<div class="btn-group">' +
+            '<button class="btn" id="setTestWa">Kirim Uji WhatsApp</button>' +
+            '<button class="btn" id="setTestMail">Kirim Uji Email</button>' +
+            '<button class="btn primary" id="setMonthly">Kirim Laporan Bulanan</button>' +
+          '</div>' : '') +
+          '</div>' +
+          '<div class="card-body tight">' +
+            App.table([
+              { key: 'label', label: 'Kanal' },
+              { key: 'enabled', label: 'Status', render: function (r) {
+                return r.enabled ? '<span class="badge success">Aktif</span>' : '<span class="badge idle">Nonaktif</span>';
+              } },
+              { key: 'detail', label: 'Keterangan' },
+            ], (notify.channels || []).map(function (c) {
+              return { label: c.label, enabled: c.enabled, detail: c.detail || '-' };
+            }), { empty: 'Tidak ada kanal notifikasi dikonfigurasi.' }) +
+          '</div>' +
+          '<div class="card-body" style="border-top:1px solid var(--border)">' +
+            '<div class="callout warning"><strong>Konfigurasi WhatsApp</strong>' +
+            'Fitur ini memakai WhatsApp Business API (Meta) atau gateway pihak ketiga. ' +
+            'Isi variabel <code>WHATSAPP_ENABLED</code>, <code>WHATSAPP_URL</code>, dan <code>WHATSAPP_TOKEN</code> di berkas <code>.env</code>, lalu restart server. ' +
+            'Nomor WhatsApp pribadi tidak bisa dikirim secara programatis tanpa gateway resmi.' +
+            '</div>' +
+            '<div class="callout"><strong>Konfigurasi Email</strong>' +
+            'Isi <code>MAIL_ENABLED</code>, <code>MAIL_HOST</code>, <code>MAIL_PORT</code>, <code>MAIL_USER</code>, dan <code>MAIL_PASS</code> di berkas <code>.env</code>. ' +
+            'Untuk Gmail, buat App Password di pengaturan keamanan akun Google.' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card">' +
+          '<div class="card-header"><div><h2 class="card-title">Tentang Aplikasi</h2></div></div>' +
+          '<div class="card-body">' +
+            App.table([{ key: 'label', label: 'Komponen' }, { key: 'value', label: 'Versi' }], [
+              { label: 'Aplikasi Absensi Fingerprint', value: '1.0.0' },
+              { label: 'Node.js', value: '24.x' },
+              { label: 'Database', value: 'MySQL / MariaDB' },
+              { label: 'Zona waktu', value: process.env.TZ || 'Asia/Jakarta' },
+            ], { empty: '-' }) +
+          '</div>' +
+        '</div>';
+
+      bindSettings(push, notify);
+    }).catch(function (err) {
+      root.innerHTML = '<div class="card"><div class="empty-state">' +
+        '<div class="big">&#9888;</div><div>Gagal memuat pengaturan: ' + esc(err.message) + '</div></div></div>';
+    });
+  };
+
+  function bindSettings(push, notify) {
+    var waBtn = document.getElementById('setTestWa');
+    if (waBtn) {
+      waBtn.addEventListener('click', function () { sendDailyReminder('whatsapp', this); });
+    }
+
+    var mailBtn = document.getElementById('setTestMail');
+    if (mailBtn) {
+      mailBtn.addEventListener('click', function () { sendDailyReminder('email', this); });
+    }
+
+    var monthly = document.getElementById('setMonthly');
+    if (monthly) {
+      monthly.addEventListener('click', function () {
+        App.modal({
+          title: 'Kirim Laporan Bulanan',
+          bodyHtml:
+            '<div class="callout">Laporan dikirim ke seluruh karyawan yang memiliki WhatsApp atau email terdaftar.</div>' +
+            '<div class="form-grid">' +
+              '<div class="field"><label>Bulan <span class="req">*</span></label><input type="month" id="mrMonth" value="' + esc(App.today().slice(0, 7)) + '"></div>' +
+            '</div>',
+          actions: [
+            { label: 'Batal' },
+            {
+              label: 'Kirim',
+              className: 'primary',
+              onClick: function (el) {
+                var month = el.querySelector('#mrMonth').value;
+                if (!/^\d{4}-\d{2}$/.test(month)) { App.toast('Bulan tidak valid.', 'error'); return false; }
+
+                api.post('/attendance/notify/monthly-report', { month: month })
+                  .then(function (res) {
+                    var d = res.data || {};
+                    App.toast('Laporan ' + App.monthLabel(month) + ' dikirim. Berhasil: ' + App.formatNumber(d.sent || 0) + ', gagal: ' + App.formatNumber(d.failed || 0) + '.', 'success');
+                    el.closeModal();
+                  })
+                  .catch(function (err) { App.toast(err.message, 'error'); return false; });
+                return false;
+              },
+            },
+          ],
+        });
+      });
+    }
+
+    void push;
+    void notify;
+  }
+
+  function sendDailyReminder(channel, btn) {
+    App.modal({
+      title: 'Kirim Pengingat Harian',
+      bodyHtml:
+        '<div class="callout">Pilih satu karyawan untuk uji coba pesan ' + (channel === 'whatsapp' ? 'WhatsApp' : 'email') + '.</div>' +
+        '<div class="field"><label>Karyawan</label><select id="ntEmp"><option value="">- pilih -</option></select></div>' +
+        '<div class="field mt"><label>Tanggal</label><input type="date" id="ntDate" value="' + esc(App.today()) + '"></div>',
+      actions: [{ label: 'Tutup' }],
+      onMount: function (el) {
+        api.get('/employees/options/list').then(function (res) {
+          var sel = el.querySelector('#ntEmp');
+          (res.data || []).forEach(function (e) {
+            var opt = document.createElement('option');
+            opt.value = e.id;
+            opt.textContent = e.employee_code + ' - ' + e.name + (e.phone ? ' (' + e.phone + ')' : (e.email ? ' (' + e.email + ')' : ' tanpa kontak'));
+            sel.appendChild(opt);
+          });
+        }).catch(function () {});
+
+        var run = el.querySelector('#ntEmp');
+        var sendBtn = document.createElement('button');
+        sendBtn.className = 'btn primary mt';
+        sendBtn.textContent = 'Kirim Pengingat';
+        sendBtn.addEventListener('click', function () {
+          var id = run.value;
+          if (!id) { App.toast('Pilih karyawan.', 'error'); return; }
+          sendBtn.disabled = true;
+          sendBtn.innerHTML = '<span class="spinner"></span> Mengirim...';
+
+          api.post('/attendance/notify/daily', {
+            employee_id: Number(id),
+            date: el.querySelector('#ntDate').value,
+          })
+            .then(function (res) {
+              var d = res.data || {};
+              App.toast('Pesan dikirim ke ' + (d.to || '-') + '.', d.ok === false ? 'warning' : 'success');
+              if (d.ok === false && d.message) App.toast(d.message, 'error', 8000);
+            })
+            .catch(function (err) { App.toast(err.message, 'error'); })
+            .then(function () {
+              sendBtn.disabled = false;
+              sendBtn.textContent = 'Kirim Pengingat';
+            });
+        });
+        el.appendChild(sendBtn);
+      },
+    });
+
+    void btn;
+  }
+})();

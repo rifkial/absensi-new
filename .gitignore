@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+*.log
+npm-debug.log*
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/tmp/
+.DS_Store
+Thumbs.db
+*.xlsx
+*.csv
+coverage/

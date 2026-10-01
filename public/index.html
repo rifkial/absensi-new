@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Aplikasi absensi fingerprint - tarik data mesin sidik jari via jaringan">
+  <title>Absensi Fingerprint</title>
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128421;</text></svg>">
+</head>
+<body>
+  <div id="bootScreen" style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f4f6f9">
+    <div style="text-align:center">
+      <div class="spinner" style="width:28px;height:28px;border-width:3px"></div>
+      <div style="margin-top:12px;color:#64748b;font-family:'Segoe UI',Roboto,sans-serif">Memuat aplikasi...</div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="/js/core.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/pages/dashboard.js"></script>
+  <script src="/js/pages/attendance.js"></script>
+  <script src="/js/pages/devices.js"></script>
+  <script src="/js/pages/employees.js"></script>
+  <script src="/js/pages/shifts.js"></script>
+  <script src="/js/pages/reports.js"></script>
+  <script src="/js/pages/users.js"></script>
+  <script src="/js/pages/settings.js"></script>
+  <script src="/js/pages/employee.js"></script>
+  <script>
+    // Hapus layar boot setelah modul selesai dimuat.
+    (function () {
+      function clearBoot() {
+        var boot = document.getElementById('bootScreen');
+        if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
+      }
+
+      if (document.readyState === 'complete') {
+        clearBoot();
+      } else {
+        window.addEventListener('load', function () { setTimeout(clearBoot, 100); });
+        // Jaring pengaman bila ada skrip yang gagal dimuat.
+        setTimeout(clearBoot, 4000);
+      }
+    })();
+  </script>
+</body>
+</html>

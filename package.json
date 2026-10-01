@@ -1,0 +1,35 @@
+{
+  "name": "absensi-fingerprint",
+  "version": "1.0.0",
+  "description": "Aplikasi absensi fingerprint (Node.js + MySQL) dengan sinkronisasi otomatis dari mesin ZKTeco/PUSH",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "migrate": "node src/db/migrate.js",
+    "seed": "node src/db/seed.js",
+    "setup": "npm run migrate && npm run seed",
+    "probe": "node tools/probe.js",
+    "scan": "node tools/scan.js",
+    "sync": "node tools/sync-once.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.2",
+    "mysql2": "^3.12.0",
+    "nodemailer": "^6.9.16"
+  },
+  "devDependencies": {
+    "eslint": "^9.17.0"
+  }
+}
