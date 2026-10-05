@@ -48,6 +48,9 @@ async function start() {
     console.warn('  [PERINGATAN] JWT_SECRET masih nilai contoh - WAJIB diganti sebelum dipakai di jaringan publik.');
   }
 
+  // Peringatan bila akun admin masih memakai password bawaan dari seed.
+  await warnIfDefaultAdminPassword();
+
   // 3) Server utama (UI + API).
   const app = createApp();
   mainServer = app.listen(config.server.port, config.server.host, () => {
@@ -69,8 +72,38 @@ async function start() {
   sync.startScheduler({ intervalMinutes: config.device.syncIntervalMinutes });
 
   console.log('='.repeat(64));
-  console.log('  Server siap. Login default: admin / admin123 (ganti setelah login pertama!)');
+  console.log('  Server siap.');
+  // Kredensial tidak dicetak di sini. Password awal hanya ditampilkan sekali
+  // saat akun admin pertama dibuat oleh `npm run seed`.
   console.log('='.repeat(64));
+}
+
+/**
+ * Peringatan bila akun admin masih memakai password bawaan hasil seed.
+ *
+ * Passwordnya sendiri tidak pernah dicetak; yang ditampilkan hanya peringatan
+ * agar admin segera menggantinya lewat menu Pengguna.
+ */
+async function warnIfDefaultAdminPassword() {
+  // Password sama persis dengan yang dipakai src/db/seed.js.
+  const SEED_DEFAULT = 'admin123';
+
+  try {
+    const row = await db.queryOne(
+      'SELECT password_hash FROM app_users WHERE username = ? AND is_active = 1',
+      ['admin']
+    );
+    if (!row) return;
+
+    const stillDefault = await require('bcryptjs').compare(SEED_DEFAULT, row.password_hash);
+    if (stillDefault) {
+      console.warn('  [PERINGATAN] Akun "admin" masih memakai password bawaan seed.');
+      console.warn('             Ganti lewat menu Pengguna sebelum dipakai di jaringan publik.');
+    }
+  } catch (err) {
+    // Pemeriksaan ini hanya gravy; kegagalan tidak boleh menghalangi start.
+    console.warn(`  [PERINGATAN] Gagal memeriksa password admin: ${err.message}`);
+  }
 }
 
 function startPushServer() {

@@ -3,6 +3,7 @@
 const db = require('../db/pool');
 const devicesService = require('./devices');
 const attendanceService = require('./attendance');
+const holidaysService = require('./holidays');
 const notify = require('./notify');
 const config = require('../config');
 const { addDays, today } = require('../utils/date');
@@ -15,7 +16,8 @@ const { addDays, today } = require('../utils/date');
  *   2. rekap absensi untuk hari-hari yang terpengaruh
  *   3. kirim notifikasi bila ada kegagalan
  *
- * Scheduler (src/scheduler.js) memanggil startScheduler() saat server menyala.
+ * startScheduler() di file ini juga dipanggil saat server menyala
+ * (lihat src/server.js), jadi penjadwal ikut hidup bersama proses Node.
  */
 
 /** Lock supaya dua siklus tidak tumpang tindih. */
@@ -89,6 +91,18 @@ async function runCycle({ only = null, force = false, minIntervalMinutes = null,
       const days = Math.max(1, Math.min(60, Number(regenerateDays) || 1));
       const from = addDays(today(), -(days - 1));
       summary.regenerated = await attendanceService.generate({ from, to: today() });
+    }
+
+    // Hari libur nasional dari API (hanya jalan bila sudah jatuh tempo).
+    const holidayResult = await holidaysService.autoSyncIfDue().catch((err) => {
+      console.error('[sync] Sinkron hari libur gagal:', err.message);
+      return null;
+    });
+    if (holidayResult) {
+      summary.holidays = {
+        years: holidayResult.years,
+        message: holidayResult.message,
+      };
     }
 
     // Notifikasi kegagalan sinkronisasi (dibatasi agar tidak spam).

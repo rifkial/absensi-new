@@ -200,6 +200,73 @@ a:hover {
   background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: 20px;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+.user-chip:hover {
+  border-color: var(--primary);
+}
+
+/* Dropdown profil: ganti password + keluar */
+.user-menu {
+  position: relative;
+}
+
+.user-chip:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.user-caret {
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 0.15s ease;
+}
+
+.user-menu.open .user-caret {
+  transform: rotate(180deg);
+}
+
+.user-menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  padding: 4px;
+  z-index: 40;
+}
+
+.user-menu-list[hidden] {
+  display: none;
+}
+
+.user-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.user-menu-item:hover {
+  background: var(--surface-alt);
+}
+
+.user-menu-item.danger {
+  color: var(--danger);
 }
 
 .avatar {
@@ -407,8 +474,10 @@ td.mono {
 .badge.success { background: var(--success-soft); color: var(--success); }
 .badge.failed { background: var(--danger-soft); color: var(--danger); }
 .badge.running { background: var(--info-soft); color: var(--info); }
+.badge.info { background: var(--info-soft); color: var(--info); }
 .badge.idle { background: #f1f5f9; color: var(--text-faint); }
 .badge.warning { background: var(--warning-soft); color: var(--warning); }
+.badge.danger { background: var(--danger-soft); color: var(--danger); }
 
 /* ---------------------------------------------------------------- Buttons */
 

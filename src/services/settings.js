@@ -2,6 +2,7 @@
 
 const db = require('../db/pool');
 const { badRequest, boolParam, intParam, str } = require('../utils/errors');
+const { parseWorkDays, parseWorkDaysStrict, toDate } = require('../utils/date');
 
 /**
  * Pengaturan aplikasi yang disimpan di tabel `settings` (key-value).
@@ -33,6 +34,19 @@ const DEFAULTS = {
   global_late_tolerance: '10',
   global_break_start: '',
   global_break_end: '',
+  // 1..7 = Senin..Minggu (sama seperti shifts.work_days). Default Senin-Jumat
+  // supaya hari Minggu tidak dihitung sebagai hari kerja.
+  global_work_days: '1,2,3,4,5',
+
+  // hari libur nasional
+  // holiday_sync_enabled  = ambil daftar libur dari API secara otomatis
+  // holiday_sync_interval_days = jarak antar percobaan sinkron otomatis
+  // holiday_sync_years_ahead   = berapa tahun ke depan ikut diunduh
+  // holiday_sync_last_at      = diisi otomatis oleh service holidays
+  holiday_sync_enabled: 'false',
+  holiday_sync_interval_days: '30',
+  holiday_sync_years_ahead: '1',
+  holiday_sync_last_at: '',
 
   // perangkat
   sync_interval_minutes: '5',
@@ -57,11 +71,24 @@ const DEFAULTS = {
   whatsapp_target: '',
   whatsapp_field_target: 'target',
   whatsapp_field_message: 'message',
+
+  // keamanan login
+  login_rate_limit_enabled: 'true',
+  login_free_attempts: '5',
+  login_lock_threshold: '10',
+  login_lock_seconds: '900',
 };
 
-/** Kapasitas cache supaya rekap harian tidak query `settings` berkali-kali. */
+/**
+ * Cache untuk getAll (nilai database digabung dengan DEFAULTS).
+ * Cache terpisah untuk getStoredMap (hanya key yang benar-benar tersimpan).
+ *
+ * Cache supaya rekap harian tidak query `settings` berkali-kali.
+ */
 let cache = null;
 let cacheStamp = 0;
+let storedCache = null;
+let storedStamp = 0;
 const CACHE_TTL_MS = 5000;
 
 function toText(value) {
@@ -72,6 +99,29 @@ function toText(value) {
 function isTime(value, withSeconds = false) {
   const pattern = withSeconds ? /^\d{1,2}:\d{2}(:\d{2})?$/ : /^\d{1,2}:\d{2}$/;
   return pattern.test(String(value || '').trim());
+}
+
+/**
+ * Ambil hanya key yang benar-benar tersimpan di tabel `settings`.
+ *
+ * Berbeda dengan getAll(), hasilnya TIDAK digabung dengan DEFAULTS. Ini untuk
+ * konfigurasi yang punya dua sumber (file .env dan UI Pengaturan): nilai .env
+ * dipakai selama key-nya belum pernah disimpan lewat UI, dan begitu admin
+ * menyIMPAN lewat UI, nilai UI itulah yang dipakai.
+ */
+async function getStoredMap({ refresh = false } = {}) {
+  if (!refresh && storedCache && Date.now() - storedStamp < CACHE_TTL_MS) return storedCache;
+
+  const rows = await db.queryAll('SELECT setting_key, setting_value FROM settings');
+  const map = {};
+  for (const row of rows) {
+    if (!row.setting_key) continue;
+    map[row.setting_key] = toText(row.setting_value);
+  }
+
+  storedCache = map;
+  storedStamp = Date.now();
+  return map;
 }
 
 /** Ubah "HH:MM" -> "HH:MM:00" supaya konsisten dengan kolom TIME MySQL. */
@@ -104,6 +154,8 @@ async function getAll({ refresh = false } = {}) {
 function invalidateCache() {
   cache = null;
   cacheStamp = 0;
+  storedCache = null;
+  storedStamp = 0;
 }
 
 /** Ubah nilai string menjadi boolean dengan fallback. */
@@ -179,6 +231,24 @@ function normalize(payload = {}) {
   intText('global_late_tolerance', 0, 240, 10);
   optionalTime('global_break_start');
   optionalTime('global_break_end');
+  if (payload.global_work_days !== undefined) {
+    // Validasi ketat juga di sini: nilai 0 (indeks UI versi lama) ditolak,
+    // bukan dibuang sehingga hari Minggu tidak hilang tanpa jejak.
+    const days = parseWorkDaysStrict(payload.global_work_days, { label: 'global_work_days' });
+    out.global_work_days = days.join(',');
+  }
+
+  // hari libur nasional
+  boolKey('holiday_sync_enabled');
+  intText('holiday_sync_interval_days', 1, 365, 30);
+  intText('holiday_sync_years_ahead', 0, 5, 1);
+  // Diisi sendiri oleh service holidays, tapi tetap divalidasi agar tidak
+  // ada string sembarang yang tersimpan.
+  if (payload.holiday_sync_last_at !== undefined) {
+    const last = toDate(payload.holiday_sync_last_at);
+    if (!last) throw badRequest('holiday_sync_last_at harus berformat YYYY-MM-DD.');
+    out.holiday_sync_last_at = last;
+  }
 
   // perangkat
   intText('sync_interval_minutes', 1, 1440, 5);
@@ -203,6 +273,12 @@ function normalize(payload = {}) {
   text('whatsapp_target', 120);
   text('whatsapp_field_target', 60, DEFAULTS.whatsapp_field_target);
   text('whatsapp_field_message', 60, DEFAULTS.whatsapp_field_message);
+
+  // keamanan login
+  boolKey('login_rate_limit_enabled');
+  intText('login_free_attempts', 1, 100, 5);
+  intText('login_lock_threshold', 1, 1000, 10);
+  intText('login_lock_seconds', 30, 86400, 900);
 
   // Jaga-jaga: cek in < cek out kecuali shift lintas malam yang diizinkan.
   if (out.global_check_in && out.global_check_out) {
@@ -255,6 +331,28 @@ async function updateMany(payload = {}) {
 }
 
 /**
+ * Bersihkan daftar hari kerja (1..7) menjadi string "1,2,3,4,5".
+ * Nilai kosong / tidak valid memakai fallback supaya rekap tidak pernah
+ * salah anggap hari Minggu sebagai hari kerja.
+ */
+function normalizeWorkDays(value, fallback) {
+  const list = String(value === undefined || value === null ? '' : value)
+    .split(',')
+    .map((v) => Number.parseInt(v.trim(), 10))
+    .filter((v) => Number.isInteger(v) && v >= 1 && v <= 7);
+  const unique = [...new Set(list)].sort((a, b) => a - b);
+  return unique.length > 0 ? unique.join(',') : fallback;
+}
+
+/**
+ * Daftar hari kerja global (1..7) dari pengaturan, dalam bentuk array angka.
+ * Nilai kosong berarti semua hari dianggap hari kerja.
+ */
+function globalWorkDays(settings = {}) {
+  return parseWorkDays(normalizeWorkDays(settings.global_work_days, ''));
+}
+
+/**
  * Bangun objek shift tiruan dari pengaturan jam kerja global.
  * Bentuknya dibuat sama dengan baris tabel `shifts` supaya seluruh helper
  * (toleransi, durasi, jam istirahat) bisa dipakai tanpa perubahan.
@@ -286,7 +384,9 @@ function globalShiftFrom(settings = {}) {
     ),
     max_work_minutes: intSetting(settings.max_daily_work_minutes, 600),
     // 1..7 = Senin..Minggu (format isoWeekday, sama seperti kolom shifts.work_days).
-    work_days: '1,2,3,4,5,6,7',
+    // Hari Minggu tidak termasuk hari kerja kecuali sengaja dibuka lewat
+    // pengaturan global_work_days.
+    work_days: normalizeWorkDays(settings.global_work_days, '1,2,3,4,5'),
     half_day: 0,
     is_active: 1,
     is_global: 1,
@@ -296,6 +396,7 @@ function globalShiftFrom(settings = {}) {
 module.exports = {
   DEFAULTS,
   getAll,
+  getStoredMap,
   updateMany,
   normalize,
   invalidateCache,
@@ -303,4 +404,6 @@ module.exports = {
   intSetting,
   timeSetting,
   globalShiftFrom,
+  globalWorkDays,
+  normalizeWorkDays,
 };

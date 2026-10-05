@@ -1,9 +1,11 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const express = require('express');
 
 const config = require('../../config');
 const db = require('../../db/pool');
+const channels = require('../../services/channels');
 const { persistLogs, mapPinsToEmployees } = require('../zkteco4370/adapter');
 const { CommandQueue } = require('./commandQueue');
 const parser = require('./parser');
@@ -19,9 +21,20 @@ function text(res, body, status = 200) {
 }
 
 /**
+ * Bandingkan dua string secara timing-safe supaya token PUSH tidak bisa
+ * ditebak lewat analisis waktu respons.
+ */
+function timingSafeEqual(a, b) {
+  const bufA = Buffer.from(String(a), 'utf8');
+  const bufB = Buffer.from(String(b), 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
  * Router protokol PUSH.
  * Mount di app terpisah (port default 3001) supaya port HTTP aplikasi tetap
- * bebas dan mesin tidak perluRIBbon lewat proxy web.
+ * bebas dan mesin tidak perlu melewati proxy web.
  */
 function createPushRouter() {
   const router = express.Router();
@@ -30,13 +43,25 @@ function createPushRouter() {
   router.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
   // Token opsional: mesin yang dikonfigurasi dengan `AuthToken` harus
-  //harus sama-sama mengirim parameter token=.
-  router.use((req, res, next) => {
-    const expected = config.device.pushAuthToken;
+  // mengirim parameter token= (query string atau header x-auth-token).
+  // Token dibaca dari tabel settings tiap request supaya mengganti token di
+  // UI Pengaturan berlaku tanpa restart; nilai .env dipakai sebagai bawaan.
+  router.use(async (req, res, next) => {
+    let expected = '';
+    try {
+      const push = await channels.pushConfig();
+      expected = push.token || '';
+    } catch (err) {
+      // Bila database tidak terbaca, jangan mengunci mesin: biarkan lewat
+      // dan biarkan error lain yang dilaporkan.
+      console.error('[push] Gagal membaca token PUSH:', err.message);
+      return next();
+    }
+
     if (!expected) return next();
 
-    const provided = req.query.token || req.headers['x-auth-token'];
-    if (provided === expected) return next();
+    const provided = String(req.query.token || req.headers['x-auth-token'] || '');
+    if (provided.length === expected.length && timingSafeEqual(provided, expected)) return next();
 
     text(res, 'Unauthorized', 401);
   });

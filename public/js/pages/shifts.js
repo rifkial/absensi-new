@@ -14,6 +14,10 @@
   var shifts = [];
   var tab = 'shifts';
 
+  /* 1..7 = Senin..Minggu, sama dengan kolom shifts.work_days dan
+     services/settings.js (isoWeekday). */
+  var WORK_DAY_NAMES = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+
   window.Pages.shifts = function (root) {
     root.innerHTML =
       '<div class="card">' +
@@ -107,8 +111,13 @@
   function workDaysLabel(value) {
     var days = String(value || '').split(',').map(function (d) { return Number(d.trim()); });
     var names = [];
+    var invalid = [];
     for (var i = 0; i < days.length; i += 1) {
-      if (days[i] >= 0 && days[i] <= 6) names.push(App.DAY_NAMES[days[i]].slice(0, 3));
+      if (days[i] >= 1 && days[i] <= 7) names.push(WORK_DAY_NAMES[days[i] - 1].slice(0, 3));
+      else invalid.push(days[i]);
+    }
+    if (invalid.length > 0) {
+      return names.join(', ') + ' <span class="badge danger">data tidak valid: ' + invalid.join(',') + '</span>';
     }
     return names.length > 0 ? names.join(', ') : '-';
   }
@@ -134,8 +143,9 @@
               '<div class="field"><label>Shift</label><select id="bkShift"><option value="">- (kosong) -</option>' +
                 (meta_.shifts || []).map(function (s) { return '<option value="' + s.id + '">' + esc(s.code + ' - ' + s.name) + '</option>'; }).join('') +
               '</select></div>' +
-              '<div class="field"><label>Jenis Hari</label><select id="bkType">' +
-                '<option value="kerja">Hari Kerja</option><option value="libur">Hari Libur</option><option value="cuti">Cuti</option></select></div>' +
+          '<div class="field"><label>Jenis Hari</label><select id="bkType">' +
+              '<option value="kerja">Hari Kerja</option><option value="libur">Hari Libur</option><option value="cuti">Cuti</option></select>' +
+              '<span class="help">Pilih "Hari Kerja" bila tanggal ini libur nasional tapi perusahaan tetap buka.</span></div>' +
               '<div class="field"><label>Unit Kerja</label><select id="bkDept"><option value="">Semua Unit Kerja</option>' +
                 (meta_.departments || []).map(function (d) { return '<option value="' + d.id + '">' + esc(d.name) + '</option>'; }).join('') +
               '</select></div>' +
@@ -244,13 +254,14 @@
           '<div class="field"><label>Jam Mulai <span class="req">*</span></label>' +
             '<input type="time" id="sfStart" value="' + esc(isEdit ? String(shift.start_time).slice(0, 5) : '08:00') + '"></div>' +
           '<div class="field"><label>Jam Selesai <span class="req">*</span></label>' +
-            '<input type="time" id="sfEnd" value="' + esc(isEdit ? String(shift.end_time).slice(0, 5) : '17:00') + '"></div>' +
+            '<input type="time" id="sfEnd" value="' + esc(isEdit ? String(shift.end_time).slice(0, 5) : '17:00') + '">' +
+            '<span class="help">Bila jam selesai lebih kecil dari jam mulai, shift dihitung lintas tengah malam (mis. 22:00 - 06:00).</span></div>' +
           '<div class="field"><label>Istirahat Mulai</label>' +
             '<input type="time" id="sfBreakStart" value="' + esc(isEdit && shift.break_start ? String(shift.break_start).slice(0, 5) : '12:00') + '"></div>' +
           '<div class="field"><label>Istirahat Selesai</label>' +
             '<input type="time" id="sfBreakEnd" value="' + esc(isEdit && shift.break_end ? String(shift.break_end).slice(0, 5) : '13:00') + '"></div>' +
           '<div class="field"><label>Toleransi Telat (menit)</label>' +
-            '<input type="number" id="sfLate" value="' + esc(isEdit ? shift.late_tolerance_min : 10) + '" min="0" max="180"></div>' +
+            '<input type="number" id="sfLate" value="' + esc(isEdit ? shift.late_tolerance_min : 10) + '" min="0" max="240"></div>' +
           '<div class="field"><label>Maksimum Jam Kerja (menit)</label>' +
             '<input type="number" id="sfMaxWork" value="' + esc(isEdit ? (shift.max_work_minutes || 600) : 600) + '" min="60" max="1440"></div>' +
         '</div>' +
@@ -258,16 +269,13 @@
         '<div class="divider"></div>' +
         '<div class="field"><label>Hari Kerja <span class="req">*</span></label>' +
           '<div class="row" id="sfDays">' +
-            App.DAY_NAMES.map(function (name, i) {
-              var id = 'day' + i;
-              return '<div class="field checkbox"><input type="checkbox" id="' + id + '" value="' + i + '"' +
-                (checkedDays[i] ? ' checked' : '') + '><label for="' + id + '">' + esc(name) + '</label></div>';
+            WORK_DAY_NAMES.map(function (name, i) {
+              var day = i + 1;
+              var id = 'day' + day;
+              return '<div class="field checkbox"><input type="checkbox" id="' + id + '" value="' + day + '"' +
+                (checkedDays[day] ? ' checked' : '') + '><label for="' + id + '">' + esc(name) + '</label></div>';
             }).join('') +
           '</div>' +
-        '</div>' +
-        '<div class="field checkbox mt">' +
-          '<input type="checkbox" id="sfCross"' + (isEdit && Number(shift.crosses_midnight) === 1 ? ' checked' : '') + '>' +
-          '<label for="sfCross">Shift melewati tengah malam (contoh: 22:00 - 06:00)</label>' +
         '</div>' +
         '<div class="field checkbox">' +
           '<input type="checkbox" id="sfActive"' + (!isEdit || Number(shift.is_active) === 1 ? ' checked' : '') + '>' +
@@ -311,8 +319,7 @@
               break_end: breakEnd || null,
               late_tolerance_min: Number(el.querySelector('#sfLate').value) || 0,
               max_work_minutes: Number(el.querySelector('#sfMaxWork').value) || 600,
-              work_days: daysValue.join(','),
-              crosses_midnight: el.querySelector('#sfCross').checked ? 1 : 0,
+              work_days: daysValue.slice().sort(function (a, b) { return a - b; }).join(','),
               is_active: el.querySelector('#sfActive').checked ? 1 : 0,
             };
 

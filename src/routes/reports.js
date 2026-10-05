@@ -17,18 +17,7 @@ router.get(
   '/formats',
   auth.requirePermission('reports:read'),
   wrap(async (req, res) => {
-    res.json({
-      ok: true,
-      data: {
-        formats: [
-          { key: 'rekap_harian', label: 'Rekap Harian (per karyawan per tanggal)' },
-          { key: 'rekap_bulanan', label: 'Rekap Bulanan (per karyawan)' },
-          { key: 'per_karyawan', label: 'Rekap per Karyawan (ringkas)' },
-          { key: 'log_mentah', label: 'Log Absensi Mentah (seluruh scan)' },
-          { key: 'ringkasan', label: 'Ringkasan per Hari' },
-        ],
-      },
-    });
+    res.json({ ok: true, data: { formats: reports.FORMAT_LIST } });
   })
 );
 

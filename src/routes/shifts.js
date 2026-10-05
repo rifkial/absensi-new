@@ -7,6 +7,7 @@ const { wrap } = require('../middleware/error');
 const { badRequest } = require('../utils/errors');
 const db = require('../db/pool');
 const shifts = require('../services/shifts');
+const audit = require('../services/audit');
 const { toDate, dateRange } = require('../utils/date');
 
 const router = express.Router();
@@ -52,6 +53,16 @@ router.post(
   auth.requirePermission('shifts:write'),
   wrap(async (req, res) => {
     const shift = await shifts.create(req.body || {});
+
+    await audit.record({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'shift.create',
+      entity: 'shifts',
+      entityId: shift.id,
+      detail: shift,
+    });
+
     res.status(201).json({ ok: true, data: shift });
   })
 );
@@ -60,7 +71,19 @@ router.put(
   '/:id',
   auth.requirePermission('shifts:write'),
   wrap(async (req, res) => {
+    const before = await shifts.getOrFail(Number(req.params.id));
     const shift = await shifts.update(Number(req.params.id), req.body || {});
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'shift.update',
+      entity: 'shifts',
+      entityId: shift.id,
+      before,
+      after: shift,
+    });
+
     res.json({ ok: true, data: shift });
   })
 );
@@ -70,6 +93,19 @@ router.delete(
   auth.requirePermission('shifts:write'),
   wrap(async (req, res) => {
     const result = await shifts.remove(Number(req.params.id));
+
+    await audit.record({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'shift.delete',
+      entity: 'shifts',
+      entityId: result.shift.id,
+      detail: {
+        shift: `${result.shift.code} - ${result.shift.name}`,
+        jam: `${result.shift.start_time} s/d ${result.shift.end_time}`,
+      },
+    });
+
     res.json({ ok: true, ...result });
   })
 );

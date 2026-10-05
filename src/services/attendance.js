@@ -4,6 +4,7 @@ const db = require('../db/pool');
 const config = require('../config');
 const shiftsService = require('./shifts');
 const settingsService = require('./settings');
+const holidaysService = require('./holidays');
 const leaveCatalog = require('./leaveCatalog');
 const {
   today,
@@ -193,17 +194,16 @@ function computeDaily({
   logs,
   leave,
   duty = null,
+  holiday = null,
   now = new Date(),
   shiftSource = null,
 }) {
-  // Shift global punya id null, jadi hanya shift_code yang tersimpan di rekap.
+  // Rekap harian tidak menyimpan shift; shift hanya dipakai saat perhitungan.
   const isGlobal = Boolean(shift && shift.is_global);
 
   const result = {
     employeeId: employee.id,
     workDate,
-    shiftId: shift && shift.id ? shift.id : null,
-    shiftCode: shift ? shift.code : null,
     shiftSource: shiftSource || (isGlobal ? 'global' : shift ? 'shift' : 'none'),
     firstIn: null,
     firstOut: null,
@@ -264,9 +264,29 @@ function computeDaily({
     return result;
   }
 
+  // 4) Hari libur nasional / cuti bersama / libur tambahan dari admin.
+  //    Diperiksa setelah dinas & pengajuan supaya tugas lapangan dan izin yang
+  //    sudah disetujui tidak hilang statusnya di hari libur.
+  if (holiday) {
+    result.status = STATUS.HARI_LIBUR;
+    result.note = holiday.name;
+    // Kalau tetap ada scan di hari libur, tandai hadir tanpa penalti telat.
+    if (logs.length > 0) {
+      result.status = STATUS.HADIR;
+      result.note = `Scan pada hari libur: ${holiday.name}`;
+      applyScans(result, logs, null);
+    }
+    return result;
+  }
+
   if (!shift) {
     // Tanpa shift, karyawan tetap bisa dihitung hadir berdasarkan scan pertama.
-    result.status = logs.length > 0 ? STATUS.HADIR : STATUS.BELUM;
+    // Tanpa scan sama sekali = alpa (tidak ada izin/cutti/dinas luar).
+    if (logs.length === 0) {
+      result.status = statusTanpaScan(workDate, now);
+      return result;
+    }
+    result.status = STATUS.HADIR;
     applyScans(result, logs, null);
     return result;
   }
@@ -282,10 +302,9 @@ function computeDaily({
     return result;
   }
 
-  // 3) Hari kerja: cari scan masuk pertama
+  // 5) Hari kerja: cari scan masuk pertama
   if (logs.length === 0) {
-    const isPast = workDate < today();
-    result.status = isPast ? STATUS.ALPA : STATUS.BELUM;
+    result.status = statusTanpaScan(workDate, now);
     return result;
   }
 
@@ -302,19 +321,30 @@ function computeDaily({
     result.lateMinutes = late > tolerance ? late : 0;
     result.status = result.lateMinutes > 0 ? STATUS.TELAT : STATUS.HADIR;
   } else {
-    result.status = STATUS.BELUM;
-  }
-
-  // 4) Hari ini yang belum lewat jam cutoff masih berstatus "belum"
-  if (workDate === today()) {
-    const cutoff = config.attendance.cutoffMinutes;
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
-    if (result.status === STATUS.BELUM && nowMinutes > cutoff) {
-      result.status = STATUS.ALPA;
-    }
+    result.status = statusTanpaScan(workDate, now);
   }
 
   return result;
+}
+
+/**
+ * Status hari kerja ketika karyawan tidak memindai sama sekali.
+ *
+ * Tidak ada scan + tidak ada izin/cutti/sakit + tidak ada dinas luar = ALPA.
+ * ALPA baru ditetapkan setelah hari tersebut lewat, atau hari ini setelah
+ * melewati jam cutoff. Hari ini sebelum cutoff masih "belum" supaya karyawan
+ * yang belum sempat scan tidak langsung dianggap alpa.
+ */
+function statusTanpaScan(workDate, now) {
+  if (workDate < today()) return STATUS.ALPA;
+
+  if (workDate === today()) {
+    const cutoff = config.attendance.cutoffMinutes;
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    return nowMinutes > cutoff ? STATUS.ALPA : STATUS.BELUM;
+  }
+
+  return STATUS.BELUM;
 }
 
 /**
@@ -432,15 +462,13 @@ function isOut(log) {
 // VALUES (...) sebanyak jumlah baris pada batch.
 const UPSERT_SQL_PREFIX = `
   INSERT INTO attendance_daily
-    (employee_id, work_date, shift_id, shift_code, first_in, first_out,
+      (employee_id, work_date, first_in, first_out,
      late_minutes, early_minutes, work_minutes, overtime_minutes,
-     scan_count, status, is_auto, note)
+     scan_count, status, note, is_auto)
   VALUES`;
 
 const UPSERT_SQL_SUFFIX = `
   ON DUPLICATE KEY UPDATE
-    shift_id = VALUES(shift_id),
-    shift_code = VALUES(shift_code),
     first_in = VALUES(first_in),
     first_out = VALUES(first_out),
     late_minutes = VALUES(late_minutes),
@@ -497,6 +525,9 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
   const leaveCache = new Map();
   const dutyCache = new Map();
 
+  // Peta hari libur sekali untuk seluruh rentang, bukan per karyawan per tanggal.
+  const holidayMap = await holidaysService.getHolidayMap(startDate, endDate);
+
   const rows = [];
   const now = new Date();
 
@@ -518,6 +549,7 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
         logs,
         leave,
         duty,
+        holiday: holidayMap.get(workDate) || null,
         now,
         shiftSource: resolved.source,
       });
@@ -525,8 +557,6 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
       rows.push([
         computed.employeeId,
         computed.workDate,
-        computed.shiftId,
-        computed.shiftCode,
         computed.firstIn,
         computed.firstOut,
         computed.lateMinutes,
@@ -549,8 +579,8 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
   let written = 0;
   for (let i = 0; i < rows.length; i += BATCH) {
     const slice = rows.slice(i, i + BATCH);
-    // 13 placeholder per baris + literal 1 untuk kolom is_auto.
-    const placeholders = slice.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,1,?)').join(', ');
+    // 11 placeholder per baris + literal 1 untuk kolom is_auto.
+    const placeholders = slice.map(() => '(?,?,?,?,?,?,?,?,?,?,?,1)').join(', ');
     // executeLarge memakai mode non-prepared supaya jumlah placeholder yang
     // banyak tidak memicu "Malformed communication packet" dari MariaDB.
     await db.executeLarge(`${UPSERT_SQL_PREFIX} ${placeholders} ${UPSERT_SQL_SUFFIX}`, slice.flat());
@@ -665,10 +695,6 @@ async function list(query = {}) {
     where.push('e.department_id = ?');
     params.push(Number(query.department_id));
   }
-  if (query.shift_id) {
-    where.push('d.shift_id = ?');
-    params.push(Number(query.shift_id));
-  }
   if (query.only_late === '1' || query.only_late === true || query.only_late === 'true') {
     where.push('d.late_minutes > 0');
   }
@@ -687,7 +713,6 @@ async function list(query = {}) {
     JOIN employees e ON e.id = d.employee_id
     LEFT JOIN departments dep ON dep.id = e.department_id
     LEFT JOIN positions pos ON pos.id = e.position_id
-    LEFT JOIN shifts s ON s.id = d.shift_id
     ${whereSql}
   `;
 
@@ -697,7 +722,7 @@ async function list(query = {}) {
     `SELECT
        d.id, d.employee_id, e.employee_code, e.name AS employee_name, e.device_user_id,
        dep.name AS department_name, pos.name AS position_name,
-       d.work_date, d.shift_id, d.shift_code, s.start_time, s.end_time,
+       d.work_date,
        d.first_in, d.first_out, d.late_minutes, d.early_minutes,
        d.work_minutes, d.overtime_minutes, d.scan_count, d.status, d.is_auto, d.note
      ${base}
@@ -730,6 +755,7 @@ async function getOne(employeeId, workDate) {
 
   const shift = await resolveShift(employeeId, date);
   const duty = await getDutyCheckin(employeeId, date);
+  const holiday = await holidaysService.getByDate(date);
 
   const logs = await db.queryAll(
     `SELECT l.id, l.log_time, l.log_state, l.verify_mode, l.work_code, l.source,
@@ -744,6 +770,7 @@ async function getOne(employeeId, workDate) {
   return {
     daily: daily || null,
     duty: duty || null,
+    holiday: holiday || null,
     shift: shift.shift
       ? {
           shift_code: shift.shift.code,
@@ -811,7 +838,8 @@ async function summary({ from, to, departmentId = null } = {}) {
              SUM(d.status = 'dinas_luar') AS dinas_luar,
              SUM(d.status = 'dinas_dalam') AS dinas_dalam,
              SUM(d.status = 'alpa') AS alpa,
-            SUM(d.status = 'belum') AS belum
+            SUM(d.status = 'belum') AS belum,
+            SUM(d.status = 'hari_libur') AS hari_libur
        FROM attendance_daily d
        JOIN employees e ON e.id = d.employee_id
      ${whereSql}
@@ -826,6 +854,14 @@ async function summary({ from, to, departmentId = null } = {}) {
     statusMap[`${row.status}_label`] = STATUS_LABEL[row.status] || row.status;
   }
 
+  // Kolom "Total" per hari dipakai tabel ringkasan di UI dan sheet ekspor,
+  // jadi harus dihitung di sini agar kedua keluaran konsisten.
+  const PER_DAY_KEYS = ['hadir', 'telat', 'izin', 'sakit', 'cuti', 'dinas_luar', 'dinas_dalam', 'alpa', 'belum', 'hari_libur'];
+  const perDayWithTotal = perDay.map((row) => {
+    const total = PER_DAY_KEYS.reduce((sum, key) => sum + Number(row[key] || 0), 0);
+    return { ...row, total };
+  });
+
   return {
     range: { from: start, to: end },
     by_status: statusMap,
@@ -838,7 +874,7 @@ async function summary({ from, to, departmentId = null } = {}) {
       total_overtime_minutes: Number(totals?.total_overtime_minutes || 0),
       total_scans: Number(totals?.total_scans || 0),
     },
-    per_day: perDay,
+    per_day: perDayWithTotal,
   };
 }
 

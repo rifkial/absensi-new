@@ -9,6 +9,10 @@
   var api = App.api;
   var esc = App.esc;
 
+  function escAttr(value) {
+    return esc(value);
+  }
+
   window.Pages = window.Pages || {};
 
   var users = [];
@@ -359,23 +363,52 @@ onMount: function (modalEl) {
             App.table([
               { key: 'label', label: 'Kanal' },
               { key: 'enabled', label: 'Status', render: function (r) {
-                return r.enabled ? '<span class="badge success">Aktif</span>' : '<span class="badge idle">Nonaktif</span>';
+                if (!r.enabled) return '<span class="badge idle">Nonaktif</span>';
+                return r.detail
+                  ? '<span class="badge warning">Belum lengkap</span>'
+                  : '<span class="badge success">Aktif</span>';
               } },
               { key: 'detail', label: 'Keterangan' },
-            ], (notify.channels || []).map(function (c) {
-              return { label: c.label, enabled: c.enabled, detail: c.detail || '-' };
-            }), { empty: 'Tidak ada kanal notifikasi dikonfigurasi.' }) +
+            ], [
+              {
+                label: 'Email (SMTP)',
+                enabled: notify.email && notify.email.enabled,
+                detail: (notify.email && notify.email.problem) ||
+                  (notify.email && notify.email.host ? notify.email.host + ':' + notify.email.port : ''),
+              },
+              {
+                label: 'WhatsApp',
+                enabled: notify.whatsapp && notify.whatsapp.enabled,
+                detail: (notify.whatsapp && notify.whatsapp.problem) ||
+                  (notify.whatsapp && notify.whatsapp.gateway ? notify.whatsapp.gateway : ''),
+              },
+            ], { empty: 'Konfigurasi kanal notifikasi tidak terbaca.' }) +
           '</div>' +
           '<div class="card-body" style="border-top:1px solid var(--border)">' +
-            '<div class="callout warning"><strong>Konfigurasi WhatsApp</strong>' +
-            'Fitur ini memakai WhatsApp Business API (Meta) atau gateway pihak ketiga. ' +
-            'Isi variabel <code>WHATSAPP_ENABLED</code>, <code>WHATSAPP_URL</code>, dan <code>WHATSAPP_TOKEN</code> di berkas <code>.env</code>, lalu restart server. ' +
-            'Nomor WhatsApp pribadi tidak bisa dikirim secara programatis tanpa gateway resmi.' +
-            '</div>' +
-            '<div class="callout"><strong>Konfigurasi Email</strong>' +
-            'Isi <code>MAIL_ENABLED</code>, <code>MAIL_HOST</code>, <code>MAIL_PORT</code>, <code>MAIL_USER</code>, dan <code>MAIL_PASS</code> di berkas <code>.env</code>. ' +
-            'Untuk Gmail, buat App Password di pengaturan keamanan akun Google.' +
-            '</div>' +
+            '<div class="callout"><strong>Isi pengaturan di halaman ini</strong>' +
+            'Kanal WhatsApp dan Email diatur pada tab <strong>Notifikasi</strong> di halaman Pengaturan, ' +
+            'lalu klik Simpan. Perubahan langsung berlaku tanpa restart server. ' +
+            'Bila kolomnya masih kosong, sistem memakai nilai bawaan dari berkas <code>.env</code>.</div>' +
+            '<div class="callout warning"><strong>Catatan WhatsApp</strong>' +
+            'Pengiriman memakai WhatsApp Business API (Meta) atau gateway pihak ketiga seperti Fonnte/Wablas. ' +
+            'Nomor WhatsApp pribadi tidak bisa dikirim secara programatis tanpa gateway resmi.</div>' +
+            '<div class="callout"><strong>Catatan Email</strong>' +
+            'Untuk Gmail, buat App Password di pengaturan keamanan akun Google, lalu pakai sebagai password SMTP. ' +
+            'Status di atas membaca konfigurasi yang benar-benar dipakai saat mengirim.</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card">' +
+          '<div class="card-header"><div><h2 class="card-title">Jejak Audit</h2>' +
+          '<p class="card-subtitle">Siapa mengubah apa di data sensitif</p></div>' +
+          (App.can('audit:read') ? '<div class="btn-group">' +
+            '<button class="btn" id="audRefresh">&#8635; Muat</button>' +
+          '</div>' : '') +
+          '</div>' +
+          '<div class="card-body tight" id="audBox">' +
+            (App.can('audit:read')
+              ? App.loading('Memuat jejak audit...')
+              : '<div class="empty-state">Jejak audit hanya bisa dilihat oleh Admin dan HR.</div>') +
           '</div>' +
         '</div>' +
 
@@ -392,6 +425,7 @@ onMount: function (modalEl) {
         '</div>';
 
       bindSettings(push, notify);
+      bindAudit();
     }).catch(function (err) {
       root.innerHTML = '<div class="card"><div class="empty-state">' +
         '<div class="big">&#9888;</div><div>Gagal memuat pengaturan: ' + esc(err.message) + '</div></div></div>';
@@ -399,8 +433,7 @@ onMount: function (modalEl) {
   };
 
   function bindSettings(push, notify) {
-    var waBtn = document.getElementById('setTestWa');
-    if (waBtn) {
+    var waBtn = document.getElementById('setTestWa');    if (waBtn) {
       waBtn.addEventListener('click', function () { sendDailyReminder('whatsapp', this); });
     }
 
@@ -445,6 +478,138 @@ onMount: function (modalEl) {
 
     void push;
     void notify;
+  }
+
+  // ------------------------------------------------------------- Jejak audit
+
+  function bindAudit() {
+    if (!App.can('audit:read')) return;
+
+    var refresh = document.getElementById('audRefresh');
+    if (refresh) refresh.addEventListener('click', loadAudit);
+
+    loadAudit();
+  }
+
+  /** Muat 20 jejak audit terbaru ke kartu "Jejak Audit". */
+  function loadAudit() {
+    var box = document.getElementById('audBox');
+    if (!box || !App.can('audit:read')) return;
+
+    box.innerHTML = App.loading('Memuat jejak audit...');
+
+    api.get('/audit', { per_page: 20 })
+      .then(function (res) {
+        var rows = res.rows || [];
+        var meta_ = res.meta || {};
+
+        if (rows.length === 0) {
+          box.innerHTML = '<div class="empty-state"><div class="big">&#128203;</div>' +
+            '<div>Belum ada jejak audit. Perubahan data akan tercatat di sini.</div></div>';
+          return;
+        }
+
+        box.innerHTML = App.table([
+          { key: 'created_at', label: 'Waktu', render: function (r) {
+            return '<span title="' + escAttr(String(r.created_at || '')) + '">' +
+              esc(App.fmtDateTime(r.created_at)) + '</span>';
+          } },
+          { key: 'actor', label: 'Pelaku', render: function (r) {
+            return r.actor ? esc(r.actor) : '<span class="faint">-</span>';
+          } },
+          { key: 'action', label: 'Aksi', render: function (r) {
+            return '<span class="badge ' + auditBadge(r.action) + '">' + esc(auditLabel(r.action)) + '</span>';
+          } },
+          { key: 'entity', label: 'Objek', render: function (r) {
+            if (!r.entity) return '<span class="faint">-</span>';
+            return '<span class="small">' + esc(r.entity) +
+              (r.entity_id ? ' <span class="faint">#' + esc(r.entity_id) + '</span>' : '') + '</span>';
+          } },
+          { key: 'detail', label: 'Keterangan', render: function (r) {
+            var text = summarizeAuditDetail(r.detail);
+            if (!text) return '<span class="faint">-</span>';
+            return '<span class="small" title="' + escAttr(text) + '">' + esc(text.slice(0, 90)) +
+              (text.length > 90 ? '...' : '') + '</span>';
+          } },
+          { key: 'ip_address', label: 'IP', render: function (r) {
+            return r.ip_address ? '<span class="mono small">' + esc(r.ip_address) + '</span>' : '<span class="faint">-</span>';
+          } },
+        ], rows, { empty: '-' }) +
+        '<div class="small faint" style="padding:8px 12px">Total ' +
+          App.formatNumber(meta_.total || 0) + ' jejak. Buka tab Browser di panel atas untuk memuat yang lebih banyak.</div>';
+      })
+      .catch(function (err) {
+        box.innerHTML = '<div class="empty-state"><div class="big">&#9888;</div>' +
+          '<div>Gagal memuat jejak audit: ' + esc(err.message) + '</div></div>';
+      });
+  }
+
+  var AUDIT_LABELS = {
+    'auth.login': 'Login berhasil',
+    'auth.login_failed': 'Login gagal',
+    'auth.login_locked': 'Akun terkunci',
+    'auth.login_throttled': 'Login ditunda',
+    'auth.password_change': 'Ganti password',
+    'user.create': 'Buat pengguna',
+    'user.update': 'Ubah pengguna',
+    'attendance.override': 'Koreksi rekap',
+    'attendance.override_reset': 'Batalkan koreksi',
+    'attendance.manual_log': 'Log manual',
+    'leave.review': 'Review pengajuan',
+    'reimburse.review': 'Review reimburse',
+    'leave_quota.reset': 'Reset jatah cuti',
+    'employee.create': 'Buat karyawan',
+    'employee.update': 'Ubah karyawan',
+    'employee.delete': 'Hapus karyawan',
+    'employee.archive': 'Arsipkan karyawan',
+    'shift.create': 'Buat shift',
+    'shift.update': 'Ubah shift',
+    'shift.delete': 'Hapus shift',
+    'settings.update': 'Ubah pengaturan',
+  };
+
+  function auditLabel(action) {
+    return AUDIT_LABELS[action] || String(action || '-');
+  }
+
+  function auditBadge(action) {
+    if (/delete|hapus|archive/i.test(action)) return 'failed';
+    if (/failed|gagal|locked|throttled/i.test(action)) return 'warning';
+    if (/create|login|tambah/i.test(action)) return 'success';
+    if (/update|ubah|override|review|reset/i.test(action)) return 'info';
+    return 'idle';
+  }
+
+  /**
+   * Ringkas kolom detail JSON jadi satu baris-teks yang enak dibaca.
+   * Kalau isinya "changes", tampilkan "field: lama -> baru" per field.
+   */
+  function summarizeAuditDetail(detail) {
+    if (!detail) return '';
+    if (typeof detail === 'string') return detail;
+
+    var data;
+    try {
+      data = typeof detail === 'object' ? detail : JSON.parse(detail);
+    } catch (e) {
+      return String(detail);
+    }
+    if (!data || typeof data !== 'object') return String(detail);
+
+    if (data.changes && typeof data.changes === 'object') {
+      return Object.keys(data.changes).map(function (key) {
+        var c = data.changes[key] || {};
+        var from = c.from === null || c.from === undefined || c.from === '' ? '(kosong)' : String(c.from);
+        var to = c.to === null || c.to === undefined || c.to === '' ? '(kosong)' : String(c.to);
+        return key + ': ' + from + ' -> ' + to;
+      }).join('; ');
+    }
+
+    return Object.keys(data).map(function (key) {
+      var v = data[key];
+      if (v === null || v === undefined) return '';
+      return key + '=' + (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    }).filter(Boolean).join(', ');
   }
 
   function sendDailyReminder(channel, btn) {

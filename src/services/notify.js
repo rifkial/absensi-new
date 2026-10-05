@@ -1,8 +1,7 @@
 'use strict';
 
-const nodemailer = require('nodemailer');
 const db = require('../db/pool');
-const config = require('../config');
+const channels = require('./channels');
 const { today, longDate, formatTime, minutesToTime } = require('../utils/date');
 const attendanceService = require('./attendance');
 
@@ -92,32 +91,22 @@ function render(template, context) {
 // Email
 // ---------------------------------------------------------------------------
 
-let mailer = null;
+/**
+ * Kirim email memakai konfigurasi terbaru (UI Pengaturan, dengan .env sebagai
+ * bawaan). Transport-nya di-cache di services/channels.js dan otomatis dibuat
+ * ulang bila host/port/user berubah.
+ */
+async function sendEmail({ to, subject, body }) {
+  const mail = await channels.mailConfig();
+  if (!mail.enabled) return { ok: false, skipped: true, reason: 'Email tidak diaktifkan.' };
 
-function getMailer() {
-  if (mailer) return mailer;
-  if (!config.mail.enabled) return null;
-  if (!config.mail.user || !config.mail.pass) {
-    console.warn('[notify] MAIL_ENABLED=true tapi MAIL_USER/MAIL_PASS kosong. Email dilewati.');
-    return null;
+  const transport = await channels.getMailer();
+  if (!transport) {
+    return { ok: false, skipped: true, reason: 'Email diaktifkan tapi konfigurasi SMTP belum lengkap.' };
   }
 
-  mailer = nodemailer.createTransport({
-    host: config.mail.host,
-    port: config.mail.port,
-    secure: config.mail.secure,
-    auth: { user: config.mail.user, pass: config.mail.pass },
-  });
-
-  return mailer;
-}
-
-async function sendEmail({ to, subject, body }) {
-  const transport = getMailer();
-  if (!transport) return { ok: false, skipped: true, reason: 'Email tidak diaktifkan.' };
-
   try {
-    const info = await transport.sendMail({ from: config.mail.from, to, subject, text: body });
+    const info = await transport.sendMail({ from: mail.from, to, subject, text: body });
     return { ok: true, messageId: info.messageId };
   } catch (err) {
     console.error(`[notify] Email ke ${to} gagal: ${err.message}`);
@@ -132,31 +121,33 @@ async function sendEmail({ to, subject, body }) {
 /**
  * Kirim WhatsApp lewat HTTP gateway generik.
  *
- * Konfigurasi: WHATSAPP_URL + WHATSAPP_TOKEN + target/field message.
- * Secara bawaan payload-nya { target, message }, yang cocok dengan gateway
- * Fonnte/Wablas. Sesuaikan WHATSAPP_FIELD_* bila gateway Anda berbeda.
+ * Konfigurasi diambil dari UI Pengaturan (jatuh ke .env bila belum diisi):
+ * URL gateway + token, dan nama field JSON untuk target & pesan. Bawaannya
+ * { target, message } yang cocok dengan Fonnte/Wablas.
  */
 async function sendWhatsApp({ target, message }) {
-  if (!config.whatsapp.enabled) return { ok: false, skipped: true, reason: 'WhatsApp tidak diaktifkan.' };
-  if (!config.whatsapp.url) return { ok: false, skipped: true, reason: 'WHATSAPP_URL belum diisi.' };
+  const wa = await channels.whatsappConfig();
 
-  const recipient = target || config.whatsapp.target;
+  if (!wa.enabled) return { ok: false, skipped: true, reason: 'WhatsApp tidak diaktifkan.' };
+  if (!wa.url) return { ok: false, skipped: true, reason: 'URL gateway WhatsApp belum diisi di Pengaturan.' };
+
+  const recipient = target || wa.target;
   if (!recipient) return { ok: false, skipped: true, reason: 'Nomor tujuan WhatsApp belum diisi.' };
 
   const payload = {
-    [config.whatsapp.targetField]: recipient,
-    [config.whatsapp.messageField]: message,
+    [wa.targetField]: recipient,
+    [wa.messageField]: message,
   };
 
   const headers = { 'Content-Type': 'application/json' };
-  if (config.whatsapp.token) {
-    headers.Authorization = config.whatsapp.token.startsWith('Bearer ')
-      ? config.whatsapp.token
-      : `Bearer ${config.whatsapp.token}`;
+  if (wa.token) {
+    headers.Authorization = wa.token.startsWith('Bearer ')
+      ? wa.token
+      : `Bearer ${wa.token}`;
   }
 
   try {
-    const response = await fetch(config.whatsapp.url, {
+    const response = await fetch(wa.url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
@@ -239,11 +230,9 @@ async function notifyLateEmployees(workDate = today(), departmentId = null) {
 
   const rows = await db.queryAll(
     `SELECT e.id, e.name, e.employee_code, e.email, e.phone,
-            d.late_minutes, d.first_in, d.shift_code,
-            s.start_time, s.late_tolerance_min
+            d.late_minutes, d.first_in
        FROM attendance_daily d
        JOIN employees e ON e.id = d.employee_id
-       LEFT JOIN shifts s ON s.id = d.shift_id
       WHERE ${where}`,
     params
   );
@@ -254,9 +243,6 @@ async function notifyLateEmployees(workDate = today(), departmentId = null) {
 
   const sent = [];
   for (const row of rows) {
-    const tolerance = Number(row.late_tolerance_min ?? 0);
-    const batas = addMinutes(row.start_time, tolerance);
-
     const result = await dispatch({
       eventKey: 'late_notice',
       to: { email: row.email, whatsapp: row.phone },
@@ -265,9 +251,7 @@ async function notifyLateEmployees(workDate = today(), departmentId = null) {
         kode: row.employee_code,
         tanggal: longDate(workDate),
         jam_masuk: formatTime(row.first_in),
-        batas_masuk: batas,
         telat: row.late_minutes,
-        shift: row.shift_code,
       },
     });
 
@@ -298,11 +282,17 @@ async function notifySyncFailed(summary) {
   const failed = (summary.devices || []).filter((d) => !d.ok);
   if (failed.length === 0) return { ok: true, skipped: true };
 
+  // Notifikasi ini untuk admin, bukan karyawan, jadi tujuan defaultnya adalah
+  // target WhatsApp / akun SMTP yang diisi di Pengaturan.
+  const wa = await channels.whatsappConfig();
+  const mail = await channels.mailConfig();
+  const adminTarget = { whatsapp: wa.target || null, email: mail.user || null };
+
   const results = [];
   for (const device of failed) {
     const result = await dispatch({
       eventKey: 'sync_failed',
-      to: { whatsapp: config.whatsapp.target, email: config.mail.user },
+      to: adminTarget,
       body: {
         perangkat: device.name,
         tanggal: new Date().toLocaleString('id-ID'),
@@ -339,17 +329,42 @@ async function sendMonthlyReport({ month, to }) {
   });
 }
 
-function status() {
+/**
+ * Status kanal notifikasi untuk halaman Pengaturan.
+ * Nilai dibaca dari konfigurasi yang benar-benar dipakai saat kirim, supaya
+ * yang tampil di UI sama dengan yang benar-benar dipakai.
+ */
+async function status() {
+  const mail = await channels.mailConfig();
+  const wa = await channels.whatsappConfig();
+
   return {
     email: {
-      enabled: config.mail.enabled,
-      configured: Boolean(config.mail.user && config.mail.pass),
-      from: config.mail.from,
+      enabled: mail.enabled,
+      configured: mail.configured,
+      host: mail.host,
+      port: mail.port,
+      user: mail.user || null,
+      from: mail.from,
+      // Sarat agar email benar-benar terkirim.
+      problem: !mail.enabled
+        ? null
+        : !mail.configured
+          ? 'Username atau password SMTP belum diisi.'
+          : null,
     },
     whatsapp: {
-      enabled: config.whatsapp.enabled,
-      configured: Boolean(config.whatsapp.url && config.whatsapp.target),
-      gateway: config.whatsapp.url ? maskUrl(config.whatsapp.url) : null,
+      enabled: wa.enabled,
+      configured: wa.configured,
+      gateway: wa.url ? maskUrl(wa.url) : null,
+      target: wa.target || null,
+      problem: !wa.enabled
+        ? null
+        : !wa.url
+          ? 'URL gateway belum diisi.'
+          : !wa.target
+            ? 'Nomor tujuan default belum diisi.'
+            : null,
     },
   };
 }

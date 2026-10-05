@@ -11,7 +11,7 @@
 
   window.Pages = window.Pages || {};
 
-  var filters = { search: '', status: 'aktif', department_id: '', shift_id: '', page: 1, per_page: 25 };
+  var filters = { search: '', status: 'aktif', department_id: '', page: 1, per_page: 25 };
   var rows = [];
   var meta = {};
   var stats = {};
@@ -30,10 +30,6 @@
             '<div class="field">' +
               '<label>Unit Kerja</label>' +
               '<select id="empDept"><option value="">Semua</option></select>' +
-            '</div>' +
-            '<div class="field">' +
-              '<label>Shift</label>' +
-              '<select id="empShift"><option value="">Semua</option></select>' +
             '</div>' +
             '<div class="field">' +
               '<label>Status</label>' +
@@ -71,21 +67,14 @@
   function fillMeta() {
     var meta_ = App.state.meta || { departments: [], positions: [], shifts: [] };
     var dept = document.getElementById('empDept');
-    var shift = document.getElementById('empShift');
-    if (!dept || !shift) return;
+    if (!dept) return;
 
     dept.innerHTML = '<option value="">Semua</option>' +
       (meta_.departments || []).map(function (d) {
         return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
       }).join('');
 
-    shift.innerHTML = '<option value="">Semua</option>' +
-      (meta_.shifts || []).map(function (s) {
-        return '<option value="' + s.id + '">' + esc(s.name) + '</option>';
-      }).join('');
-
     dept.value = filters.department_id || '';
-    shift.value = filters.shift_id || '';
   }
 
   function bind() {
@@ -115,16 +104,9 @@
       load();
     });
 
-    document.getElementById('empShift').addEventListener('change', function () {
-      filters.shift_id = this.value;
-      filters.page = 1;
-      load();
-    });
-
     document.getElementById('empFilter').addEventListener('click', function () {
       filters.search = search.value.trim();
       filters.department_id = document.getElementById('empDept').value;
-      filters.shift_id = document.getElementById('empShift').value;
       filters.status = document.getElementById('empStatus').value;
       filters.page = 1;
       load();
@@ -207,12 +189,6 @@
       } },
       { key: 'department_name', label: 'Unit Kerja', render: function (r) { return esc(r.department_name || '-'); } },
       { key: 'position_name', label: 'Jabatan', render: function (r) { return esc(r.position_name || '-'); } },
-      { key: 'shift_name', label: 'Shift', render: function (r) {
-        return r.shift_code
-          ? '<span class="small">' + esc(r.shift_code) + '</span> <span class="small faint">' +
-            esc(App.fmtTime(r.start_time)) + '-' + esc(App.fmtTime(r.end_time)) + '</span>'
-          : '<span class="faint">-</span>';
-      } },
       { key: 'fingerprint_status', label: 'Sidik Jari', render: function (r) {
         if (r.fingerprint_status === 'terdaftar') return '<span class="badge success">Terdaftar</span>';
         if (r.fingerprint_status === 'rusak') return '<span class="badge failed">Rusak</span>';
@@ -222,6 +198,9 @@
         if (r.status === 'aktif') return '<span class="badge success">Aktif</span>';
         if (r.status === 'resign') return '<span class="badge warning">Resign</span>';
         return '<span class="badge idle">Nonaktif</span>';
+      } },
+      { key: 'annual_leave_quota', label: 'Cuti Tahunan', align: 'right', render: function (r) {
+        return quotaCell(r);
       } },
       { key: 'aksi', label: 'Aksi', width: '150px', render: function (r) {
         return '<div class="btn-group">' +
@@ -282,6 +261,7 @@
         field('hire_date', 'Tanggal Masuk', isEdit ? (row.hire_date || '').slice(0, 10) : '', false, 'Format YYYY-MM-DD.') +
         selectField('status', 'Status', isEdit ? row.status : 'aktif',
           [['aktif', 'Aktif'], ['nonaktif', 'Nonaktif'], ['resign', 'Resign']]) +
+        quotaField(isEdit ? row : null) +
         field('address', 'Alamat', isEdit ? row.address || '' : '', false, '', 'textarea') +
         field('notes', 'Catatan', isEdit ? row.notes || '' : '', false, '', 'textarea') +
       '</div>';
@@ -322,6 +302,152 @@
           },
         },
       ],
+    });
+  }
+
+  /**
+   * Field jatah cuti tahunan. Kolom "terpakai" sengaja tidak bisa diedit di
+   * sini: angka itu hanya berubah saat pengajuan disetujui atau saat admin/HR
+   * menekan tombol Reset di halaman detail.
+   */
+  function quotaField(row) {
+    var quota = row ? Number(row.annual_leave_quota || 0) : 0;
+    var used = row ? Number(row.annual_leave_used || 0) : 0;
+    var remaining = quota - used;
+
+    var readOnly = row
+      ? '<div class="field">' +
+          '<label>Cuti Tahunan Terpakai</label>' +
+          '<input type="text" value="' + used + ' dari ' + quota + ' hari" disabled>' +
+          '<span class="help">Sisa ' + remaining + ' hari. Dikurangi otomatis saat pengajuan cuti tahunan disetujui.</span>' +
+        '</div>'
+      : '';
+
+    return '<div class="field">' +
+      '<label>Jatah Cuti Tahunan</label>' +
+      '<input type="number" id="f_annual_leave_quota" min="0" max="365" step="1" value="' + quota + '">' +
+      '<span class="help">Jumlah hari kerja per tahun, diinput manual. Isi 0 bila karyawan tidak punya jatah cuti tahunan.</span>' +
+    '</div>' + readOnly;
+  }
+
+  /** Sel "sisa / jatah" cuti tahunan untuk tabel daftar karyawan. */
+  function quotaCell(r) {
+    var quota = Number(r.annual_leave_quota || 0);
+    if (quota <= 0) return '<span class="faint">-</span>';
+
+    var used = Number(r.annual_leave_used || 0);
+    var remaining = quota - used;
+    var cls = remaining <= 0 ? 'failed' : remaining <= 2 ? 'warning' : 'success';
+
+    return '<span class="badge ' + cls + '">' + remaining + ' / ' + quota + '</span>';
+  }
+
+  /**
+   * Panel jatah cuti tahunan di halaman detail: angka sisa, tombol reset, dan
+   * riwayat perubahan. Reset mengembalikan jatah terpakai ke 0 tanpa mengubah
+   * status pengajuan yang sudah disetujui.
+   */
+  function quotaPanel(quota, employee) {
+    if (!quota) {
+      return '<div class="callout">Data jatah cuti tidak dapat dimuat.</div>';
+    }
+
+    var html =
+      '<div class="grid-2" style="gap:8px;margin-bottom:12px">' +
+        statBox('Jatah', quota.quota + ' hari') +
+        statBox('Terpakai', quota.used + ' hari') +
+        statBox('Sisa', quota.remaining + ' hari') +
+      '</div>';
+
+    html += quota.reset_at
+      ? '<span class="help">Terakhir dikembalikan penuh pada ' + esc(App.fmtDateTime(quota.reset_at)) + '.</span>'
+      : '<span class="help">Belum pernah dikembalikan penuh.</span>';
+
+    if (App.can('employees:write') && quota.quota > 0 && quota.used > 0) {
+      html += '<div class="btn-group" style="margin-top:8px">' +
+        '<button class="btn sm" id="btnResetQuota">Reset Jatah Cuti</button>' +
+      '</div>';
+    }
+
+    html += '<div style="margin-top:12px">' + quotaLogTable(quota.logs) + '</div>';
+
+    return '<div id="quotaPanel" data-employee-name="' +
+      escAttr(employee ? employee.name : '') + '">' + html + '</div>';
+  }
+
+  function quotaLogTable(logs) {
+    return App.table([
+      { key: 'created_at', label: 'Waktu', render: function (r) { return esc(App.fmtDateTime(r.created_at)); } },
+      { key: 'action', label: 'Aksi', render: function (r) {
+        var labels = { potong: 'Pemotongan', kembalikan: 'Pengembalian', reset: 'Reset', set_jatah: 'Ubah Jatah' };
+        var cls = r.action === 'potong' ? 'failed' : 'success';
+        return '<span class="badge ' + cls + '">' + esc(labels[r.action] || r.action) + '</span>';
+      } },
+      { key: 'days', label: 'Hari', align: 'right', render: function (r) {
+        return Number(r.days) > 0 ? '+' + r.days : String(r.days);
+      } },
+      { key: 'used_after', label: 'Sisa', align: 'right' },
+      { key: 'reason', label: 'Keterangan' },
+    ], logs || [], { empty: 'Belum ada perubahan jatah.', emptyIcon: '&#128197;' });
+  }
+
+  function statBox(label, value) {
+    return '<div class="stat">' +
+      '<div class="stat-value">' + esc(value) + '</div>' +
+      '<div class="stat-label">' + esc(label) + '</div>' +
+    '</div>';
+  }
+
+  function confirmResetQuota(employeeId, employeeName) {
+    App.confirm({
+      title: 'Reset Jatah Cuti Tahunan',
+      heading: 'Reset jatah ' + employeeName + '?',
+      message:
+        'Jatah cuti tahunan akan dikembalikan ke jumlah semula. ' +
+        'Status pengajuan yang sudah disetujui tidak berubah, hanya hitungan jatahnya.',
+      danger: true,
+      confirmLabel: 'Ya, Reset',
+      onConfirm: function () {
+        api.post('/employees/' + employeeId + '/leave-quota/reset', {})
+          .then(function (res) {
+            App.toast(res.message || 'Jatah cuti berhasil dikembalikan.', 'success');
+            refreshQuotaPanel(employeeId);
+            load();
+          })
+          .catch(function (err) { App.toast(err.message, 'error'); });
+      },
+    });
+  }
+
+  /**
+   * Muat ulang panel jatah cuti di dalam modal detail yang sedang terbuka,
+   * tanpa membuka modal baru, lalu pasang ulang listener tombol reset.
+   */
+  function refreshQuotaPanel(employeeId) {
+    var panel = document.getElementById('quotaPanel');
+    if (!panel) return;
+
+    api.get('/employees/' + employeeId + '/leave-quota')
+      .then(function (res) {
+        panel.innerHTML = quotaPanelBody(res.data);
+        bindResetButton(panel, employeeId, panel.getAttribute('data-employee-name') || 'karyawan ini');
+      })
+      .catch(function (err) { App.toast(err.message, 'error'); });
+  }
+
+  /** Isi panel saja, tanpa pembungkus #quotaPanel, untuk refresh. */
+  function quotaPanelBody(quota) {
+    var html = quotaPanel(quota, null);
+    return html
+      .replace(/^<div id="quotaPanel"[^>]*>/, '')
+      .replace(/<\/div>$/, '');
+  }
+
+  function bindResetButton(root, employeeId, employeeName) {
+    var btn = root.querySelector('#btnResetQuota');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      confirmResetQuota(employeeId, employeeName);
     });
   }
 
@@ -384,11 +510,15 @@
       status: get('status') || 'aktif',
       notes: get('notes') || null,
       fingerprint_status: isEdit ? undefined : 'belum',
+      annual_leave_quota: quotaValue(get('annual_leave_quota')),
     };
 
     payload.device_user_id = pin || null;
     if (payload.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email)) {
       return { error: 'Format email tidak valid.' };
+    }
+    if (payload.annual_leave_quota === null) {
+      return { error: 'Jatah cuti tahunan harus bilangan bulat antara 0 dan 365.' };
     }
 
     Object.keys(payload).forEach(function (k) {
@@ -400,6 +530,15 @@
 
   function numOrNull(v) {
     return v === '' || v === null ? null : Number(v);
+  }
+
+  /** Jatah cuti tahunan: kosong berarti 0, dan harus bilangan bulat 0-365. */
+  function quotaValue(v) {
+    if (v === '' || v === null) return 0;
+    var n = Number(v);
+    if (!isFinite(n) || Math.floor(n) !== n) return null;
+    if (n < 0 || n > 365) return null;
+    return n;
   }
 
   function reloadMeta() {
@@ -425,11 +564,13 @@
           api.get('/employees/' + id + '/fingerprints'),
           api.get('/employees/' + id + '/schedules', { from: App.today(), to: App.addDays(App.today(), 30) }),
           api.get('/employees/' + id + '/leaves'),
+          api.get('/employees/' + id + '/leave-quota').catch(function () { return { data: null }; }),
         ]).then(function (res) {
           var e = res[0].data;
           var fps = res[1].data || [];
           var scheds = res[2].data || [];
           var leaves = res[3].data || [];
+          var quota = res[4].data || null;
 
           target.innerHTML =
             '<div class="grid-2">' +
@@ -441,12 +582,14 @@
                   { key: 'name', label: 'Nama' },
                   { key: 'department_name', label: 'Unit Kerja' },
                   { key: 'position_name', label: 'Jabatan' },
-                  { key: 'shift_name', label: 'Shift' },
                   { key: 'phone', label: 'Telepon' },
                   { key: 'email', label: 'Email' },
                   { key: 'hire_date', label: 'Tanggal Masuk', render: function (r) { return App.fmtDate(r.hire_date); } },
                   { key: 'status', label: 'Status' },
                 ], [e], { empty: 'Data tidak ditemukan.' }) +
+
+                '<h4 style="margin:16px 0 8px">Jatah Cuti Tahunan</h4>' +
+                quotaPanel(quota, e) +
               '</div>' +
               '<div>' +
                 '<h4 style="margin:0 0 8px">Sidik Jari di Mesin</h4>' +
@@ -465,8 +608,7 @@
                       ? '<span class="badge hari_libur">Libur</span>'
                       : '<span class="badge success">Kerja</span>';
                   } },
-                  { key: 'shift_name', label: 'Shift' },
-                ], scheds, { empty: 'Belum ada jadwal khusus. Sistem memakai shift default karyawan.' }) +
+                ], scheds, { empty: 'Belum ada jadwal khusus. Semua hari mengikuti jam kerja global.' }) +
 
                 '<h4 style="margin:16px 0 8px">Riwayat Izin / Sakit / Cuti</h4>' +
                 App.table([
@@ -494,6 +636,9 @@
             addSchedule.querySelector('#btnAddLeave').addEventListener('click', function () { openLeaveForm(e); });
             addSchedule.querySelector('#btnDailyRecap').addEventListener('click', function () { openRecap(e); });
           }
+
+          var panel = target.querySelector('#quotaPanel');
+          if (panel) bindResetButton(panel, e.id, e.name);
         }).catch(function (err) {
           target.innerHTML = '<div class="empty-state"><div class="big">&#9888;</div><div>' + esc(err.message) + '</div></div>';
         });
@@ -590,32 +735,70 @@
   }
 
   function openLeaveForm(emp) {
+    var LEAVE_CATALOG = [
+      {
+        key: 'cuti',
+        label: 'Cuti',
+        subtypes: [
+          { key: 'cuti_tahunan', label: 'Cuti Tahunan' },
+          { key: 'cuti_sakit', label: 'Cuti Sakit' },
+          { key: 'cuti_melahirkan', label: 'Cuti Melahirkan' },
+          { key: 'cuti_menikah', label: 'Cuti Menikah' },
+          { key: 'cuti_haji', label: 'Cuti Haji / Umrah' },
+          { key: 'cuti_kematian_keluarga', label: 'Cuti Kematian Keluarga' },
+          { key: 'cuti_alasan_penting', label: 'Cuti Alasan Penting' },
+          { key: 'cuti_tanpa_bayar', label: 'Cuti Tanpa Bayar' },
+          { key: 'cuti_lainnya', label: 'Cuti Lainnya' },
+        ],
+      },
+      {
+        key: 'izin',
+        label: 'Izin',
+        subtypes: [
+          { key: 'izin_tidak_masuk', label: 'Izin Tidak Masuk' },
+          { key: 'izin_terlambat', label: 'Izin Terlambat' },
+          { key: 'izin_pulang_cepat', label: 'Izin Pulang Cepat' },
+          { key: 'izin_kebutuhan_pribadi', label: 'Izin Keperluan Pribadi' },
+          { key: 'izin_keluarga', label: 'Izin Mengurus Keluarga' },
+          { key: 'izin_administrasi', label: 'Izin Mengurus Administrasi / Dokumen' },
+          { key: 'izin_sakit', label: 'Izin Sakit' },
+          { key: 'izin_meninggal', label: 'Izin Kematian Keluarga' },
+          { key: 'izin_lainnya', label: 'Izin Lainnya' },
+        ],
+      },
+      {
+        key: 'dinas',
+        label: 'Dinas',
+        subtypes: [
+          { key: 'dinas_dalam_kota', label: 'Dinas Dalam Kota', single_day: true },
+          { key: 'dinas_luar_kota', label: 'Dinas Luar Kota', single_day: false },
+        ],
+      },
+    ];
+
+    var categoryOptions = LEAVE_CATALOG.map(function (c) {
+      return '<option value="' + esc(c.key) + '">' + esc(c.label) + '</option>';
+    }).join('');
+
     App.modal({
-      title: 'Pengajuan Izin: ' + emp.name,
+      title: 'Pengajuan: ' + emp.name,
       bodyHtml:
-        '<div class="callout">Setelah disetujui, rekap otomatis akan berstatus izin / sakit / cuti sehingga tidak dihitung alpa.</div>' +
+        '<div class="callout">Setelah disetujui, rekap otomatis akan berstatus izin / sakit / cuti / dinas sehingga tidak dihitung alpa.</div>' +
+        '<div class="field"><label>Kategori <span class="req">*</span></label>' +
+          '<select id="lvCategory">' + categoryOptions + '</select></div>' +
+        '<div class="field" id="lvSubtypeWrap"><label>Jenis <span class="req">*</span></label>' +
+          '<select id="lvSubtype"></select></div>' +
+        '<div class="field" id="lvPlaceWrap" style="display:none"><label>Tujuan / Lokasi <span class="req">*</span></label>' +
+          '<input type="text" id="lvPlace" maxlength="150" placeholder="Contoh: Kantor cabang Surabaya"></div>' +
         '<div class="form-grid">' +
-          '<div class="field">' +
-            '<label>Jenis <span class="req">*</span></label>' +
-            '<select id="lvType">' +
-              '<option value="izin">Izin</option>' +
-              '<option value="sakit">Sakit</option>' +
-              '<option value="cuti">Cuti</option>' +
-              '<option value="izin_meninggal">Izin Meninggal</option>' +
-            '</select>' +
-          '</div>' +
-          '<div class="field">' +
-            '<label>Tanggal Mulai <span class="req">*</span></label>' +
-            '<input type="date" id="lvStart" value="' + esc(App.today()) + '">' +
-          '</div>' +
-          '<div class="field">' +
-            '<label>Tanggal Selesai <span class="req">*</span></label>' +
-            '<input type="date" id="lvEnd" value="' + esc(App.today()) + '">' +
-          '</div>' +
+          '<div class="field"><label>Tanggal Mulai <span class="req">*</span></label>' +
+            '<input type="date" id="lvStart" value="' + esc(App.today()) + '"></div>' +
+          '<div class="field" id="lvEndWrap"><label>Tanggal Selesai <span class="req">*</span></label>' +
+            '<input type="date" id="lvEnd" value="' + esc(App.today()) + '"></div>' +
         '</div>' +
         '<div class="field mt">' +
-          '<label>Alasan</label>' +
-          '<textarea id="lvReason" rows="2" placeholder="mis. DPC, upbringing anak"></textarea>' +
+          '<label>Keterangan <span class="req">*</span></label>' +
+          '<textarea id="lvReason" rows="2" placeholder="Jelaskan keterangan pengajuan"></textarea>' +
         '</div>' +
         '<div class="field checkbox mt">' +
           '<input type="checkbox" id="lvApprove" checked>' +
@@ -627,19 +810,29 @@
           label: 'Simpan Pengajuan',
           className: 'primary',
           onClick: function (el) {
+            var category = el.querySelector('#lvCategory').value;
+            var subtype = el.querySelector('#lvSubtype').value;
             var start = el.querySelector('#lvStart').value;
             var end = el.querySelector('#lvEnd').value;
+            var reason = el.querySelector('#lvReason').value.trim();
+            var place = el.querySelector('#lvPlace').value.trim();
+
             if (!start || !end) { App.toast('Tanggal wajib diisi.', 'error'); return false; }
             if (end < start) { App.toast('Tanggal selesai tidak boleh lebih awal.', 'error'); return false; }
+            if (!reason) { App.toast('Keterangan wajib diisi.', 'error'); return false; }
 
             var autoApprove = el.querySelector('#lvApprove').checked;
 
-            api.post('/employees/' + emp.id + '/leaves', {
-              leave_type: el.querySelector('#lvType').value,
+            var payload = {
+              category: category,
+              subtype: subtype,
               start_date: start,
               end_date: end,
-              reason: el.querySelector('#lvReason').value.trim() || null,
-            })
+              reason: reason,
+            };
+            if (place) payload.place = place;
+
+            api.post('/employees/' + emp.id + '/leaves', payload)
               .then(function (res) {
                 App.toast('Pengajuan disimpan.', 'success');
                 el.closeModal();
@@ -661,6 +854,59 @@
         },
       ],
     });
+
+    var categorySelect = document.getElementById('lvCategory');
+    var subtypeSelect = document.getElementById('lvSubtype');
+    var subtypeWrap = document.getElementById('lvSubtypeWrap');
+    var placeWrap = document.getElementById('lvPlaceWrap');
+    var endWrap = document.getElementById('lvEndWrap');
+
+    function updateForm() {
+      var catKey = categorySelect.value;
+      var cat = null;
+      for (var i = 0; i < LEAVE_CATALOG.length; i++) {
+        if (LEAVE_CATALOG[i].key === catKey) { cat = LEAVE_CATALOG[i]; break; }
+      }
+      if (!cat) {
+        subtypeWrap.style.display = 'none';
+        placeWrap.style.display = 'none';
+        endWrap.style.display = '';
+        return;
+      }
+
+      subtypeWrap.style.display = '';
+      subtypeSelect.innerHTML = cat.subtypes.map(function (s) {
+        return '<option value="' + esc(s.key) + '">' + esc(s.label) + '</option>';
+      }).join('');
+
+      var sub = cat.subtypes[0];
+      var isDinas = catKey === 'dinas';
+      var isSingleDay = sub && sub.single_day;
+
+      placeWrap.style.display = isDinas ? '' : 'none';
+      endWrap.style.display = isSingleDay ? 'none' : '';
+    }
+
+    categorySelect.addEventListener('change', updateForm);
+    subtypeSelect.addEventListener('change', function () {
+      var catKey = categorySelect.value;
+      var cat = null;
+      for (var i = 0; i < LEAVE_CATALOG.length; i++) {
+        if (LEAVE_CATALOG[i].key === catKey) { cat = LEAVE_CATALOG[i]; break; }
+      }
+      if (!cat) return;
+      var sub = null;
+      for (var j = 0; j < cat.subtypes.length; j++) {
+        if (cat.subtypes[j].key === subtypeSelect.value) { sub = cat.subtypes[j]; break; }
+      }
+      if (!sub) return;
+      var isDinas = catKey === 'dinas';
+      var isSingleDay = sub.single_day;
+      placeWrap.style.display = isDinas ? '' : 'none';
+      endWrap.style.display = isSingleDay ? 'none' : '';
+    });
+
+    updateForm();
   }
 
   function openRecap(emp) {

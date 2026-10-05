@@ -2,7 +2,13 @@
 
 const db = require('../db/pool');
 const { badRequest, notFound, conflict, str, boolParam } = require('../utils/errors');
-const { timeToMinutes, minutesToTime, parseWorkDays, isWorkDay } = require('../utils/date');
+const {
+  timeToMinutes,
+  minutesToTime,
+  parseWorkDays,
+  parseWorkDaysStrict,
+  isWorkDay,
+} = require('../utils/date');
 const config = require('../config');
 
 /**
@@ -19,11 +25,13 @@ const SELECT = `
 
 async function list({ includeInactive = true } = {}) {
   const where = includeInactive ? '' : 'WHERE is_active = 1';
-  return db.queryAll(`SELECT ${SELECT} FROM shifts ${where} ORDER BY is_active DESC, start_time ASC, name ASC`);
+  const rows = await db.queryAll(`SELECT ${SELECT} FROM shifts ${where} ORDER BY is_active DESC, start_time ASC, name ASC`);
+  return rows.map(withDuration);
 }
 
 async function getById(id) {
-  return db.queryOne(`SELECT ${SELECT} FROM shifts WHERE id = ?`, [id]);
+  const row = await db.queryOne(`SELECT ${SELECT} FROM shifts WHERE id = ?`, [id]);
+  return row ? withDuration(row) : null;
 }
 
 async function getOrFail(id) {
@@ -33,7 +41,13 @@ async function getOrFail(id) {
 }
 
 async function getByCode(code) {
-  return db.queryOne(`SELECT ${SELECT} FROM shifts WHERE code = ?`, [String(code).trim()]);
+  const row = await db.queryOne(`SELECT ${SELECT} FROM shifts WHERE code = ?`, [String(code).trim()]);
+  return row ? withDuration(row) : null;
+}
+
+/** Tambahkan durasi kerja efektif (menit) hasil perhitungan, bukan kolom DB. */
+function withDuration(row) {
+  return { ...row, duration_minutes: shiftDurationMinutes(row) };
 }
 
 /** Validasi & normalisasi payload shift. */
@@ -98,9 +112,9 @@ function normalize(payload, { partial = false } = {}) {
   }
 
   if (payload.work_days !== undefined) {
-    const days = parseWorkDays(payload.work_days);
-    if (days.length === 0) throw badRequest('work_days harus memuat angka 1-7 (contoh: "1,2,3,4,5").');
-    data.work_days = [...new Set(days)].sort().join(',');
+    // Validasi ketat: nilai di luar 1-7 (mis. "0" dari UI versi lama) harus
+    // ditolak, bukan dibuang diam-diam supaya hari Minggu tidak hilang.
+    data.work_days = parseWorkDaysStrict(payload.work_days, { label: 'work_days' }).join(',');
   }
 
   if (payload.half_day !== undefined) {
@@ -222,12 +236,14 @@ function maxWorkMinutesOf(shift) {
 
 /** Daftar shift ringan untuk form (id, code, name, jam). */
 async function options() {
-  return db.queryAll(
-    `SELECT id, code, name, start_time, end_time, work_days, late_tolerance_min
+  const rows = await db.queryAll(
+    `SELECT id, code, name, start_time, end_time, break_start, break_end,
+            work_days, late_tolerance_min
        FROM shifts
       WHERE is_active = 1
       ORDER BY start_time ASC, name ASC`
   );
+  return rows.map(withDuration);
 }
 
 module.exports = {

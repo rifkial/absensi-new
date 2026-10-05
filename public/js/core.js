@@ -15,6 +15,10 @@
   // ------------------------------------------------------------------ Config
 
   var API_BASE = '/api';
+  // Tanpa timeout, fetch yang menggantung (proxy/server tidak merespons) membuat
+  // spinner di halaman berjalan tanpa henti dan tanpa pesan error.
+  var REQUEST_TIMEOUT_MS = 30000;
+  var DOWNLOAD_TIMEOUT_MS = 120000;
   var TOKEN_KEY = 'absensi_token';
   var USER_KEY = 'absensi_user';
   var PERMS_KEY = 'absensi_perms';
@@ -133,8 +137,8 @@ belum: 'Belum Absen',
     return String(n).padStart(2, '0');
   }
 
-  function todayStr() {
-    var d = new Date();
+  function todayStr(date) {
+    var d = date instanceof Date ? date : new Date();
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
   }
 
@@ -316,6 +320,9 @@ belum: 'Belum Absen',
         init.body = opts.body instanceof FormData ? opts.body : JSON.stringify(opts.body);
       }
       if (opts.signal) init.signal = opts.signal;
+      else if (typeof AbortController === 'function') {
+        init.signal = AbortSignal.timeout(opts.raw ? DOWNLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
+      }
 
       return fetch(url, init).then(function (res) {
         var contentType = res.headers.get('content-type') || '';
@@ -347,7 +354,8 @@ belum: 'Belum Absen',
         if (err instanceof ApiError) throw err;
 
         if (err && err.name === 'AbortError') {
-          throw new ApiError('Permintaan dibatalkan.', 0);
+          if (opts.raw) throw new ApiError('Unduhan dibatalkan / terlalu lama.', 0);
+          throw new ApiError('Permintaan terlalu lama (timeout). Periksa koneksi ke server.', 0);
         }
         if (typeof navigator !== 'undefined' && navigator.onLine === false) {
           throw new ApiError('Tidak ada koneksi ke server.', 0);
@@ -679,6 +687,7 @@ belum: 'Belum Absen',
     fmtTime: formatTime,
     fmtDateTime: formatDateTime,
     fmtNumber: formatNumber,
+    formatNumber: formatNumber,
     fmtMinutes: formatMinutes,
     fmtBytes: formatBytes,
     fmtRelative: formatRelative,

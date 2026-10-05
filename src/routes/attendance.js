@@ -6,6 +6,7 @@ const auth = require('../middleware/auth');
 const { wrap } = require('../middleware/error');
 const { badRequest } = require('../utils/errors');
 const attendance = require('../services/attendance');
+const audit = require('../services/audit');
 const notify = require('../services/notify');
 const employees = require('../services/employees');
 const db = require('../db/pool');
@@ -187,11 +188,32 @@ router.put(
   wrap(async (req, res) => {
     const date = toDate(req.params.date);
     if (!date) throw badRequest('Tanggal tidak valid.');
+    const employeeId = Number(req.params.employeeId);
 
-    const result = await attendance.override(Number(req.params.employeeId), date, {
+    // Simpan kondisi lama supaya jejak audit menunjukkan angka sebelum/sesudah.
+    const before = await db.queryOne(
+      `SELECT status, first_in, first_out, late_minutes, work_minutes,
+              overtime_minutes, scan_count, note, is_auto
+         FROM attendance_daily
+        WHERE employee_id = ? AND work_date = ?`,
+      [employeeId, date]
+    );
+
+    const result = await attendance.override(employeeId, date, {
       status: req.body?.status,
       note: req.body?.note,
       isAuto: false,
+    });
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'attendance.override',
+      entity: 'attendance_daily',
+      entityId: `${employeeId}:${date}`,
+      before,
+      after: result?.daily || null,
+      detail: { alasan: req.body?.note || null },
     });
 
     res.json({ ok: true, ...result });
@@ -205,12 +227,28 @@ router.delete(
   wrap(async (req, res) => {
     const date = toDate(req.params.date);
     if (!date) throw badRequest('Tanggal tidak valid.');
+    const employeeId = Number(req.params.employeeId);
+
+    const before = await db.queryOne(
+      'SELECT status, note, is_auto FROM attendance_daily WHERE employee_id = ? AND work_date = ?',
+      [employeeId, date]
+    );
 
     await db.execute(
       'UPDATE attendance_daily SET is_auto = 1, note = NULL WHERE employee_id = ? AND work_date = ?',
-      [Number(req.params.employeeId), date]
+      [employeeId, date]
     );
-    const result = await attendance.generateForEmployee(Number(req.params.employeeId), date);
+    const result = await attendance.generateForEmployee(employeeId, date);
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'attendance.override_reset',
+      entity: 'attendance_daily',
+      entityId: `${employeeId}:${date}`,
+      before,
+      after: { note: null, is_auto: 1 },
+    });
 
     res.json({ ok: true, message: 'Koreksi manual dibatalkan, rekap dihitung ulang dari log mesin.', data: result });
   })
@@ -243,6 +281,21 @@ router.post(
 
     await attendance.generateForEmployee(employeeId, logDate);
 
+    await audit.record({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'attendance.manual_log',
+      entity: 'attendance_logs',
+      entityId: employeeId,
+      detail: {
+        employee: `${employee.employee_code} - ${employee.name}`,
+        log_time: logTime,
+        log_state: logState,
+        verify_mode: verifyMode,
+        work_code: workCode,
+      },
+    });
+
     res.json({
       ok: true,
       inserted: result.affectedRows > 0,
@@ -259,7 +312,7 @@ router.get(
   '/notify/status',
   auth.requirePermission('notify:send'),
   wrap(async (req, res) => {
-    res.json({ ok: true, data: notify.status() });
+    res.json({ ok: true, data: await notify.status() });
   })
 );
 

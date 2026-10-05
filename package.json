@@ -16,7 +16,8 @@
     "probe": "node tools/probe.js",
     "scan": "node tools/scan.js",
     "sync": "node tools/sync-once.js",
-    "test": "node --test test/"
+    "test": "node --test \"test/**/*.test.js\"",
+    "lint": "eslint ."
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -10,6 +10,7 @@ const config = require('../config');
 const attendanceService = require('./attendance');
 const employeesService = require('./employees');
 const leaveCatalog = require('./leaveCatalog');
+const leaveQuota = require('./leaveQuota');
 const { badRequest, notFound, forbidden } = require('../utils/errors');
 const { today, toDate, startOfMonth } = require('../utils/date');
 
@@ -78,6 +79,8 @@ async function getProfile(user, employeeId) {
       status: employee.status,
     },
     shift,
+    // Sisa jatah cuti tahunan, supaya karyawan bisa melihat sendiri di portal.
+    leave_quota: await leaveQuota.getSummary(employee.id),
   };
 }
 
@@ -109,7 +112,7 @@ async function getMyAttendance(employeeId, query = {}) {
   }
 
   const rows = await db.queryAll(
-    `SELECT d.work_date, d.shift_code, d.first_in, d.first_out,
+    `SELECT d.work_date, d.first_in, d.first_out,
             d.late_minutes, d.early_minutes, d.work_minutes, d.overtime_minutes,
             d.status, d.note
        FROM attendance_daily d
@@ -242,6 +245,10 @@ async function createLeave(employeeId, payload = {}) {
   );
 
   const row = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [result.insertId]);
+
+  // Simpan jumlah hari kerja yang akan dipotong dari jatah cuti tahunan.
+  await leaveQuota.prepareLeave(row);
+
   return decorateLeave(row);
 }
 
@@ -289,12 +296,18 @@ function resolveSubtype(categoryKey, subtypeKey) {
 /** Tambahkan label yang siap dipakai UI. */
 function decorateLeave(row) {
   if (!row) return row;
+
+  const days = Number(row.quota_days || 0);
+  const usesQuota = leaveQuota.usesQuota(row);
+
   return {
     ...row,
     category: leaveCatalog.categoryForLeave(row.leave_type, row.subtype),
     subtype_label: row.subtype
       ? leaveCatalog.labelForLeave(row.leave_type, row.subtype)
       : attendanceService.STATUS_LABEL[row.leave_type] || row.leave_type,
+    uses_quota: usesQuota,
+    quota_days: usesQuota ? days : 0,
   };
 }
 
@@ -343,7 +356,7 @@ async function getToday(employeeId) {
   const leave = await getApprovedDutyLeave(employeeId, workDate);
   const duty = await attendanceService.getDutyCheckin(employeeId, workDate);
   const daily = await db.queryOne(
-    'SELECT work_date, shift_code, first_in, first_out, late_minutes, work_minutes, overtime_minutes, status, note FROM attendance_daily WHERE employee_id = ? AND work_date = ?',
+    'SELECT work_date, first_in, first_out, late_minutes, work_minutes, overtime_minutes, status, note FROM attendance_daily WHERE employee_id = ? AND work_date = ?',
     [employeeId, workDate]
   );
 

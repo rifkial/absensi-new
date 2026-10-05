@@ -212,9 +212,6 @@
           '<div class="small faint">' + esc(r.department_name || '') + '</div>';
       } },
       { key: 'device_user_id', label: 'PIN', mono: true },
-      { key: 'shift_code', label: 'Shift', render: function (r) {
-        return r.shift_code ? esc(r.shift_code) : '<span class="faint">-</span>';
-      } },
       { key: 'first_in', label: 'Masuk', render: function (r) { return timeCell(r.first_in, r.late_minutes); } },
       { key: 'break_start', label: 'Istirahat', render: function (r) { return timeCell(r.break_start, 0); } },
       { key: 'break_end', label: 'Kembali', render: function (r) { return timeCell(r.break_end, 0); } },
@@ -280,7 +277,6 @@
       { key: 'employee_code', label: 'Kode', mono: true },
       { key: 'name', label: 'Nama', render: function (r) { return esc(r.employee_name || '-'); } },
       { key: 'department_name', label: 'Unit Kerja', render: function (r) { return esc(r.department_name || '-'); } },
-      { key: 'shift_code', label: 'Shift', render: function (r) { return esc(r.shift_code || '-'); } },
       { key: 'first_in', label: 'Masuk', render: function (r) { return App.fmtTime(r.first_in); } },
       { key: 'first_out', label: 'Pulang', render: function (r) { return App.fmtTime(r.first_out); } },
       { key: 'late_minutes', label: 'Telat', align: 'right', render: function (r) {
@@ -408,6 +404,7 @@
           var daily = res[1].daily || res[1].data || null;
           var logs = res[1].logs || [];
           var shift = res[1].shift || null;
+          var holiday = res[1].holiday || null;
 
           target.innerHTML =
             '<div class="grid-2">' +
@@ -422,9 +419,8 @@
                 '<h4 style="margin:16px 0 8px">Rekap Tanggal ' + esc(App.fmtDate(date)) + '</h4>' +
                 (daily
                   ? App.table([
-                      { key: 'status', label: 'Status', render: function (r) { return App.badge(r.status); } },
-                      { key: 'shift_code', label: 'Shift' },
-                      { key: 'first_in', label: 'Masuk', render: function (r) { return App.fmtTime(r.first_in); } },
+{ key: 'status', label: 'Status', render: function (r) { return App.badge(r.status); } },
+                       { key: 'first_in', label: 'Masuk', render: function (r) { return App.fmtTime(r.first_in); } },
                       { key: 'first_out', label: 'Pulang', render: function (r) { return App.fmtTime(r.first_out); } },
                       { key: 'late_minutes', label: 'Telat (mnt)', align: 'right' },
                       { key: 'early_minutes', label: 'Pulang Awal (mnt)', align: 'right' },
@@ -446,6 +442,11 @@
                   } },
                   { key: 'work_code', label: 'Kode', mono: true },
                 ], logs, { empty: 'Tidak ada scan pada tanggal ini.', emptyIcon: '&#128190;' }) +
+                (holiday ? '<div class="callout mt"><strong>Hari Libur: ' + esc(holiday.name) + '</strong>' +
+                  (Number(holiday.is_workday) === 1
+                    ? ' Tanggal ini ditandai tetap bekerja, jadi dihitung seperti hari biasa.'
+                    : ' Tanggal ini otomatis berstatus Hari Libur dan tidak dihitung alpa.') +
+                  '</div>' : '') +
                 (shift ? '<div class="callout mt"><strong>Shift: ' + esc(shift.name || shift.shift_code || '-') + '</strong>' +
                   'Jam kerja ' + esc(App.fmtTime(shift.start_time)) + ' - ' + esc(App.fmtTime(shift.end_time)) +
                   (shift.break_start ? ', istirahat ' + esc(App.fmtTime(shift.break_start)) + ' - ' + esc(App.fmtTime(shift.break_end)) : '') +

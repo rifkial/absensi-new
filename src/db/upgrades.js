@@ -175,14 +175,88 @@ async function upgradeAttendanceDaily(conn) {
   );
 }
 
+async function upgradeEmployees(conn) {
+  if (!(await tableExists(conn, 'employees'))) return;
+
+  // Jatah cuti tahunan: diinput manual admin/HR, berkurang saat pengajuan
+  // cuti tahunan disetujui. Nilai default 0 supaya karyawan lama tidak suddenly
+  // punya jatah tak terduga.
+  const columns = [
+    ['annual_leave_quota', '`annual_leave_quota` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `fingerprint_status`'],
+    ['annual_leave_used', '`annual_leave_used` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `annual_leave_quota`'],
+    ['annual_leave_reset_at', '`annual_leave_reset_at` DATETIME NULL AFTER `annual_leave_used`'],
+  ];
+
+  for (const [name, definition] of columns) {
+    if (await columnExists(conn, 'employees', name)) continue;
+    await conn.query(`ALTER TABLE \`employees\` ADD COLUMN ${definition}`);
+    changes.push(`employees.${name}`);
+  }
+}
+
+/**
+ * Periksa shifts.work_days yang tersimpan memakai indeks UI versi lama (0-6).
+ *
+ * UI lama mengirim index App.DAY_NAMES (0=Minggu..6=Sabtu) sementara server
+ * memvalidasi ISO 1-7. Karena urutan"Senin..Sabtu" kebetulan sama di kedua
+ * konvensi, angka 1-6 tidak rusak; yang hilang hanya hari Minggu (terkirim
+ * "0" lalu dibuang). Nilai yang sudah tersimpan tidak bisa ditebak maksudnya,
+ * jadi migrate hanya MEMBERITAKAN baris bermasalah lewat log, tanpa mengubah
+ * data diam-diam.
+ */
+async function auditShiftWorkDays(conn) {
+  if (!(await tableExists(conn, 'shifts'))) return;
+
+  const [rows] = await conn.query('SELECT id, code, name, work_days FROM shifts');
+  const suspect = [];
+
+  for (const row of rows) {
+    const parts = String(row.work_days || '')
+      .split(',')
+      .map((v) => Number.parseInt(v.trim(), 10));
+    const invalid = parts.filter((n) => !Number.isInteger(n) || n < 1 || n > 7);
+
+    if (invalid.length > 0) {
+      suspect.push({ ...row, reason: `nilai di luar 1-7: ${invalid.join(', ')}` });
+    } else if (parts.length === 0) {
+      suspect.push({ ...row, reason: 'kosong' });
+    }
+  }
+
+  if (suspect.length === 0) return;
+
+  console.log('[migrate] PERHATIAN: shifts.work_days berikut tidak valid dan perlu diperbaiki manual:');
+  for (const row of suspect) {
+    console.log(`[migrate]   - #${row.id} ${row.code} "${row.name}" = "${row.work_days}" (${row.reason})`);
+  }
+  console.log('[migrate]   Nilai tidak diubah otomatis karena hanya admin yang tahu maksud sebenarnya.');
+  console.log('[migrate]   Catatan: shift hasil UI versi lama mungkin kehilangan hari Minggu tanpa jejak.');
+}
+
+async function upgradeLeaveQuotaLogs(conn) {
+  if (!(await tableExists(conn, 'leave_requests'))) return;
+
+  // Menyimpan berapa hari yang sudah dipotong per pengajuan supaya pengajuan
+  // yang dibalik statusnya (approved -> rejected) mengembalikan jumlah yang sama.
+  if (!(await columnExists(conn, 'leave_requests', 'quota_days'))) {
+    await conn.query(
+      'ALTER TABLE `leave_requests` ADD COLUMN `quota_days` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `review_note`'
+    );
+    changes.push('leave_requests.quota_days');
+  }
+}
+
 /**
  * Terapkan seluruh upgrade. Wajib dipanggil SESUDAH `USE <database>` dan
  * SEBELUM schema.sql dieksekusi (schema.sql menambahkan FK di akhir).
  */
 async function applyUpgrades(conn) {
   await upgradeAppUsers(conn);
+  await upgradeEmployees(conn);
   await upgradeLeaveRequests(conn);
+  await upgradeLeaveQuotaLogs(conn);
   await upgradeAttendanceDaily(conn);
+  await auditShiftWorkDays(conn);
 
   if (changes.length > 0) {
     console.log('[migrate] Upgrade skema instalasi lama:');

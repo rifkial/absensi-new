@@ -17,7 +17,66 @@ const { badRequest } = require('../utils/errors');
  *  - ringkasan    : statistik per hari
  */
 
-const FORMATS = ['rekap_harian', 'rekap_bulanan', 'log_mentah', 'ringkasan', 'per_karyawan'];
+/**
+ * Daftar format laporan yang didukung.
+ *
+ * `key` dipakai sebagai nilai query `format`, `label` ditampilkan di dropdown
+ * UI, dan `scope` memberi tahu kelompok filter mana yang relevan supaya
+ * frontend bisa menyembunyikan filter yang tidak berlaku.
+ *
+ * Daftar ini adalah sumber kebenaran tunggal: endpoint /api/reports/formats memakai
+ * daftar ini langsung, sehingga format yang bisa dipilih di UI selalu sama
+ * dengan yang benar-benar bisa dijalankan.
+ */
+const FORMAT_LIST = [
+  {
+    key: 'rekap_harian',
+    label: 'Rekap Harian (per karyawan per tanggal)',
+    scope: 'range',
+    hint: 'Satu baris per karyawan per tanggal, lengkap dengan jam masuk, jam pulang, dan keterlambatan.',
+  },
+  {
+    key: 'rekap_bulanan',
+    label: 'Rekap Bulanan (per karyawan)',
+    scope: 'month',
+    hint: 'Rekap satu bulan penuh per karyawan, termasuk persentase kehadiran.',
+  },
+  {
+    key: 'per_karyawan',
+    label: 'Rekap per Karyawan (ringkas)',
+    scope: 'month',
+    hint: 'Ringkasan singkat per karyawan untuk Evaluasi Kinerja.',
+  },
+  {
+    key: 'lembur',
+    label: 'Lembur per Karyawan',
+    scope: 'range',
+    hint: 'Hanya karyawan yang punya lembur, diurutkan dari yang paling banyak.',
+  },
+  {
+    key: 'rekap_kehadiran',
+    label: 'Rekap Kehadiran per Karyawan',
+    scope: 'range',
+    hint: 'Like matrix hadir/telat/izin/alpa per karyawan per tanggal.',
+  },
+  {
+    key: 'ringkasan',
+    label: 'Ringkasan per Hari',
+    scope: 'range',
+    hint: 'Jumlah hadir, telat, izin, sakit, alpa per tanggal untuk seluruh perusahaan.',
+  },
+  {
+    key: 'log_mentah',
+    label: 'Log Absensi Mentah (seluruh scan)',
+    scope: 'range',
+    hint: 'Setiap scan yang masuk dari mesin, termasuk scan yang tidak terhubung ke master karyawan.',
+  },
+];
+
+const FORMATS = FORMAT_LIST.map((f) => f.key);
+
+// Format yang difilter per bulan (bukan rentang tanggal).
+const MONTH_FORMATS = ['rekap_bulanan', 'per_karyawan'];
 
 // ---------------------------------------------------------------------------
 // Pengambilan data
@@ -47,16 +106,15 @@ async function buildDailyRows({ from, to, departmentId = null, employeeId = null
     `SELECT
        e.employee_code, e.device_user_id, e.name AS employee_name,
        dep.name AS department_name, pos.name AS position_name,
-       d.work_date, d.shift_code, s.start_time, s.end_time,
+       d.work_date,
        d.first_in, d.first_out, d.late_minutes, d.early_minutes,
        d.work_minutes, d.overtime_minutes, d.scan_count, d.status, d.note
      FROM attendance_daily d
      JOIN employees e ON e.id = d.employee_id
      LEFT JOIN departments dep ON dep.id = e.department_id
      LEFT JOIN positions pos ON pos.id = e.position_id
-     LEFT JOIN shifts s ON s.id = d.shift_id
-     WHERE ${where.join(' AND ')}
-     ORDER BY e.name ASC, d.work_date ASC`,
+      WHERE ${where.join(' AND ')}
+      ORDER BY e.name ASC, d.work_date ASC`,
     params
   );
 }
@@ -112,6 +170,85 @@ async function buildMonthlyRows({ month, departmentId = null, employeeId = null 
   );
 }
 
+/**
+ * Rekap kehadiran karyawan: total hari kerja, kehadiran, izin, cuti,
+ * dinas luar, keterlambatan, dan lembur per karyawan dalam periode tertentu.
+ */
+async function buildAttendanceRecapRows({ from, to, departmentId = null, employeeId = null }) {
+  const where = ['d.work_date BETWEEN ? AND ?'];
+  const params = [from, to];
+
+  if (departmentId) {
+    where.push('e.department_id = ?');
+    params.push(Number(departmentId));
+  }
+  if (employeeId) {
+    where.push('d.employee_id = ?');
+    params.push(Number(employeeId));
+  }
+
+  return db.queryAll(
+    `SELECT
+       e.employee_code,
+       e.name AS employee_name,
+       dep.name AS department_name,
+       pos.name AS position_name,
+       SUM(d.status <> 'hari_libur') AS total_hari_kerja,
+       SUM(d.status IN ('hadir', 'telat')) AS total_hadir,
+       SUM(d.status = 'izin') AS total_izin,
+       SUM(d.status = 'cuti') AS total_cuti,
+       SUM(d.status = 'dinas_luar') AS total_dinas_luar,
+       SUM(d.status = 'telat') AS total_hari_terlambat,
+       SUM(d.overtime_minutes) AS total_overtime_minutes
+     FROM attendance_daily d
+     JOIN employees e ON e.id = d.employee_id
+     LEFT JOIN departments dep ON dep.id = e.department_id
+     LEFT JOIN positions pos ON pos.id = e.position_id
+     WHERE ${where.join(' AND ')}
+     GROUP BY e.id, e.employee_code, e.name, dep.name, pos.name
+     ORDER BY e.name ASC`,
+    params
+  );
+}
+
+/**
+ * Laporan lembur per karyawan.
+ * Rekap harian tidak menyimpan shift, jadi angka lembur diambil dari kolom
+ * `overtime_minutes` yang sudah dihitung saat rekap (dengan patokan shift
+ * karyawan, jadwal harian, atau jam kerja global).
+ */
+async function buildOvertimeRows({ from, to, departmentId = null, employeeId = null }) {
+  const where = ['d.work_date BETWEEN ? AND ?', 'd.overtime_minutes > 0'];
+  const params = [from, to];
+
+  if (departmentId) {
+    where.push('e.department_id = ?');
+    params.push(Number(departmentId));
+  }
+  if (employeeId) {
+    where.push('d.employee_id = ?');
+    params.push(Number(employeeId));
+  }
+
+  return db.queryAll(
+    `SELECT
+       e.id AS employee_id, e.employee_code, e.name AS employee_name,
+       dep.name AS department_name, pos.name AS position_name,
+       COUNT(*) AS days_with_overtime,
+       SUM(d.overtime_minutes) AS total_overtime_minutes,
+       MAX(d.overtime_minutes) AS max_overtime_minutes
+     FROM attendance_daily d
+     JOIN employees e ON e.id = d.employee_id
+     LEFT JOIN departments dep ON dep.id = e.department_id
+     LEFT JOIN positions pos ON pos.id = e.position_id
+     WHERE ${where.join(' AND ')}
+     GROUP BY e.id, e.employee_code, e.name, dep.name, pos.name
+     HAVING total_overtime_minutes > 0
+     ORDER BY total_overtime_minutes DESC`,
+    params
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Format laporan
 // ---------------------------------------------------------------------------
@@ -120,11 +257,17 @@ async function buildMonthlyRows({ month, departmentId = null, employeeId = null 
  * Susun objek laporan lengkap (dipakai untuk pratinjau di UI maupun ekspor).
  */
 async function build(format, options = {}) {
-  const from = toDate(options.from) || startOfMonth();
-  const to = toDate(options.to) || today();
+  // Format berbasis bulan memakai rentang bulan tersebut; format lain memakai
+  // from/to. month diutamakan karena UI menyembunyikan kolom tanggal untuknya.
+  const useMonth = MONTH_FORMATS.includes(format) && typeof options.month === 'string';
+  const month = useMonth ? options.month : null;
+  if (month && !/^\d{4}-\d{2}$/.test(month)) throw badRequest('month harus format YYYY-MM.');
+
+  const from = useMonth ? `${month}-01` : toDate(options.from) || startOfMonth();
+  const to = useMonth ? endOfMonth(`${month}-01`) : toDate(options.to) || today();
 
   if (format === 'rekap_harian') {
-    const rows = await buildDailyRows(options);
+    const rows = await buildDailyRows({ ...options, from, to });
     return {
       format,
       range: { from, to },
@@ -135,12 +278,10 @@ async function build(format, options = {}) {
   }
 
   if (format === 'rekap_bulanan') {
-    const month = options.month || from.slice(0, 7);
-    if (!/^\d{4}-\d{2}$/.test(month)) throw badRequest('month harus format YYYY-MM.');
-    const rows = await buildMonthlyRows({ ...options, month });
+    const rows = await buildMonthlyRows({ ...options, month: month || from.slice(0, 7) });
     return {
       format,
-      range: { month, from: `${month}-01`, to: endOfMonth(`${month}-01`) },
+      range: { month: month || from.slice(0, 7), from, to },
       rows: rows.map(decorateMonthlyRow),
       columns: MONTHLY_COLUMNS,
       meta: { total: rows.length },
@@ -173,7 +314,7 @@ async function build(format, options = {}) {
 
   if (format === 'per_karyawan') {
     const summary = await attendanceService.summary({ from, to, departmentId: options.department_id });
-    const detail = await buildDailyRows({ from, to, departmentId: options.department_id });
+    const detail = await buildDailyRows({ from, to, departmentId: options.department_id, employeeId: options.employee_id });
     const byEmployee = new Map();
 
     for (const row of detail) {
@@ -227,6 +368,28 @@ async function build(format, options = {}) {
     };
   }
 
+  if (format === 'lembur') {
+    const rows = await buildOvertimeRows({ ...options, from, to });
+    return {
+      format,
+      range: { from, to },
+      rows: rows.map(decorateOvertimeRow),
+      columns: OVERTIME_COLUMNS,
+      meta: { total: rows.length },
+    };
+  }
+
+  if (format === 'rekap_kehadiran') {
+    const rows = await buildAttendanceRecapRows({ ...options, from, to });
+    return {
+      format,
+      range: { from, to },
+      rows: rows.map(decorateAttendanceRecapRow),
+      columns: ATTENDANCE_RECAP_COLUMNS,
+      meta: { total: rows.length },
+    };
+  }
+
   throw badRequest(`format "${format}" tidak dikenali. Pilihan: ${FORMATS.join(', ')}.`);
 }
 
@@ -268,6 +431,22 @@ function decorateMonthlyRow(row) {
   };
 }
 
+function decorateOvertimeRow(row) {
+  return {
+    ...row,
+    total_overtime_jam: (Number(row.total_overtime_minutes || 0) / 60).toFixed(2),
+    max_overtime_jam: (Number(row.max_overtime_minutes || 0) / 60).toFixed(2),
+  };
+}
+
+function decorateAttendanceRecapRow(row) {
+  return {
+    ...row,
+    no_urut: 0,
+    total_lembur_jam: (Number(row.total_overtime_minutes || 0) / 60).toFixed(2),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Kolom untuk ekspor Excel
 // ---------------------------------------------------------------------------
@@ -279,7 +458,6 @@ const DAILY_COLUMNS = [
   { key: 'position_name', header: 'Jabatan', width: 18 },
   { key: 'tanggal', header: 'Tanggal', width: 13 },
   { key: 'hari', header: 'Hari', width: 26 },
-  { key: 'shift_code', header: 'Shift', width: 10 },
   { key: 'jam_masuk', header: 'Jam Masuk', width: 12 },
   { key: 'jam_keluar', header: 'Jam Keluar', width: 13 },
   { key: 'menit_terlambat', header: 'Telat (menit)', width: 14 },
@@ -302,7 +480,7 @@ const MONTHLY_COLUMNS = [
   { key: 'total_sakit', header: 'Sakit', width: 9 },
   { key: 'total_cuti', header: 'Cuti', width: 9 },
   { key: 'total_dinas_luar', header: 'Dinas Luar', width: 13 },
-  { key: 'alpa', header: 'Alpa', width: 9 },
+  { key: 'total_alpa', header: 'Alpa', width: 9 },
   { key: 'persen_hadir', header: '% Kehadiran', width: 13 },
   { key: 'total_late_minutes', header: 'Total Telat (menit)', width: 18 },
   { key: 'rata_late_jam', header: 'Rata-rata Telat (jam)', width: 19 },
@@ -334,6 +512,8 @@ const SUMMARY_COLUMNS = [
   { key: 'dinas_luar', header: 'Dinas Luar', width: 13 },
   { key: 'alpa', header: 'Alpa', width: 9 },
   { key: 'belum', header: 'Belum', width: 9 },
+  { key: 'hari_libur', header: 'Libur', width: 9 },
+  { key: 'total', header: 'Total', width: 10 },
 ];
 
 const EMPLOYEE_COLUMNS = [
@@ -349,6 +529,33 @@ const EMPLOYEE_COLUMNS = [
   { key: 'persen_hadir', header: '% Kehadiran', width: 13 },
   { key: 'total_late_minutes', header: 'Total Telat (menit)', width: 18 },
   { key: 'total_work_minutes', header: 'Total Kerja (menit)', width: 18 },
+];
+
+const OVERTIME_COLUMNS = [
+  { key: 'employee_code', header: 'Kode Karyawan', width: 16 },
+  { key: 'employee_name', header: 'Nama', width: 26 },
+  { key: 'department_name', header: 'Departemen', width: 20 },
+  { key: 'position_name', header: 'Jabatan', width: 18 },
+  { key: 'days_with_overtime', header: 'Hari Lembur', width: 12 },
+  { key: 'total_overtime_minutes', header: 'Total Lembur (menit)', width: 18 },
+  { key: 'total_overtime_jam', header: 'Total Lembur (jam)', width: 16 },
+  { key: 'max_overtime_minutes', header: 'Lembur Terlama (menit)', width: 20 },
+  { key: 'max_overtime_jam', header: 'Lembur Terlama (jam)', width: 18 },
+];
+
+const ATTENDANCE_RECAP_COLUMNS = [
+  { key: 'no_urut', header: 'No', width: 6 },
+  { key: 'employee_code', header: 'ID Karyawan', width: 16 },
+  { key: 'employee_name', header: 'Nama', width: 26 },
+  { key: 'department_name', header: 'Divisi/Departemen', width: 20 },
+  { key: 'position_name', header: 'Jabatan', width: 18 },
+  { key: 'total_hari_kerja', header: 'Total Hari Kerja', width: 14 },
+  { key: 'total_hadir', header: 'Total Kehadiran', width: 14 },
+  { key: 'total_izin', header: 'Total Izin', width: 10 },
+  { key: 'total_cuti', header: 'Total Cuti', width: 10 },
+  { key: 'total_dinas_luar', header: 'Total Dinas Luar', width: 14 },
+  { key: 'total_hari_terlambat', header: 'Total Hari Terlambat', width: 16 },
+  { key: 'total_lembur_jam', header: 'Total Lemburan (jam)', width: 16 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -474,6 +681,8 @@ function titleFor(format, range) {
     log_mentah: 'LAPORAN LOG ABSENSI MENTAH',
     ringkasan: 'LAPORAN RINGKASAN ABSENSI HARIAN',
     per_karyawan: 'LAPORAN REKAP PER KARYAWAN',
+    lembur: 'LAPORAN LEMBUR PER KARYAWAN',
+    rekap_kehadiran: 'REKAP KEHADIRAN KARYAWAN',
   };
   const period = range.month
     ? `${monthName(Number(range.month.slice(5, 7)))} ${range.month.slice(0, 4)}`
@@ -488,6 +697,8 @@ function sheetNameFor(format, range) {
     log_mentah: 'Log Mentah',
     ringkasan: 'Ringkasan',
     per_karyawan: 'Per Karyawan',
+    lembur: 'Lembur',
+    rekap_kehadiran: 'Rekap Kehadiran',
   };
   void range;
   return map[format] || 'Laporan';
@@ -501,6 +712,8 @@ function buildFilename(format, range) {
     log_mentah: 'log-mentah',
     ringkasan: 'ringkasan',
     per_karyawan: 'per-karyawan',
+    lembur: 'lembur',
+    rekap_kehadiran: 'rekap-kehadiran',
   };
   return `absensi-${names[format] || format}-${stamp}.xlsx`;
 }
@@ -528,6 +741,7 @@ function escapeCsv(value) {
 }
 
 module.exports = {
+  FORMAT_LIST,
   FORMATS,
   build,
   exportExcel,

@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS positions (
 
 -- ---------------------------------------------------------------------------
 -- 3. Shift kerja
---    work_days: daftar hari kerja (1=Minggu ... 7=Sabtu), dipisah koma
+--    work_days: daftar hari kerja ISO (1=Senin ... 7=Minggu), dipisah koma
 --    contoh "1,2,3,4,5" = Senin-Jumat
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS shifts (
@@ -97,6 +97,12 @@ CREATE TABLE IF NOT EXISTS employees (
   status              ENUM('aktif','nonaktif','resign') NOT NULL DEFAULT 'aktif',
   fingerprint_status  ENUM('belum','terdaftar','gagal') NOT NULL DEFAULT 'belum'
                       COMMENT 'Status enrollment sidik jari di mesin',
+  annual_leave_quota  SMALLINT UNSIGNED NOT NULL DEFAULT 0
+                      COMMENT 'Jatah cuti tahunan (hari kerja), diinput manual admin/HR',
+  annual_leave_used   SMALLINT UNSIGNED NOT NULL DEFAULT 0
+                      COMMENT 'Cuti tahunan yang sudah terpakai, berkurang saat pengajuan disetujui',
+  annual_leave_reset_at DATETIME    NULL
+                      COMMENT 'Waktu jatah cuti terakhir dikembalikan penuh oleh admin/HR',
   notes               TEXT         NULL,
   created_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -149,6 +155,8 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   reviewed_by  INT UNSIGNED NULL,
   reviewed_at  DATETIME     NULL,
   review_note  VARCHAR(500) NULL,
+  quota_days   SMALLINT UNSIGNED NOT NULL DEFAULT 0
+               COMMENT 'Jumlah hari kerja yang dipotong dari jatah cuti tahunan oleh pengajuan ini',
   created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_leave_emp_date (employee_id, start_date, end_date),
@@ -158,7 +166,27 @@ CREATE TABLE IF NOT EXISTS leave_requests (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------
--- 7. Perangkat fingerprint
+-- 7. Reimburse karyawan
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS reimburses (
+  id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  employee_id  INT UNSIGNED NOT NULL,
+  description  VARCHAR(500) NOT NULL,
+  amount       DECIMAL(12,2) NOT NULL DEFAULT 0,
+  attachment   VARCHAR(255) NULL,
+  status       ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+  reviewed_by  INT UNSIGNED NULL,
+  reviewed_at  DATETIME     NULL,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_reimburse_employee (employee_id),
+  KEY ix_reimburse_status (status),
+  CONSTRAINT fk_reimburse_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE,
+  CONSTRAINT fk_reimburse_reviewer FOREIGN KEY (reviewed_by)  REFERENCES app_users  (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- 8. Perangkat fingerprint
 --    protocol: 'zkteco-tcp'  -> polling TCP (port 4370)
 --              'push-http'   -> mesin PUSH ke server (ADMS/icLock HTTP)
 --              'csv'         -> impor manual file
@@ -240,8 +268,6 @@ CREATE TABLE IF NOT EXISTS attendance_daily (
   id               INT UNSIGNED NOT NULL AUTO_INCREMENT,
   employee_id      INT UNSIGNED NOT NULL,
   work_date        DATE         NOT NULL,
-  shift_id         INT UNSIGNED NULL,
-  shift_code       VARCHAR(20)  NULL,
   first_in         DATETIME     NULL,
   first_out        DATETIME     NULL,
   late_minutes     SMALLINT UNSIGNED NOT NULL DEFAULT 0,
@@ -259,9 +285,7 @@ CREATE TABLE IF NOT EXISTS attendance_daily (
   UNIQUE KEY uq_daily_emp_date (employee_id, work_date),
   KEY ix_daily_date (work_date),
   KEY ix_daily_status (work_date, status),
-  KEY ix_daily_shift (shift_id),
-  CONSTRAINT fk_daily_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE,
-  CONSTRAINT fk_daily_shift    FOREIGN KEY (shift_id)    REFERENCES shifts    (id) ON DELETE SET NULL
+  CONSTRAINT fk_daily_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------
@@ -341,10 +365,6 @@ SELECT
   pos.name        AS position_name,
   e.device_user_id,
   d.work_date,
-  d.shift_id,
-  d.shift_code,
-  s.start_time,
-  s.end_time,
   d.first_in,
   d.first_out,
   d.late_minutes,
@@ -358,8 +378,7 @@ SELECT
 FROM attendance_daily d
 JOIN employees   e   ON e.id = d.employee_id
 LEFT JOIN departments dep ON dep.id = e.department_id
-LEFT JOIN positions   pos ON pos.id = e.position_id
-LEFT JOIN shifts      s   ON s.id = d.shift_id;
+LEFT JOIN positions   pos ON pos.id = e.position_id;
 
 -- ---------------------------------------------------------------------------
 -- 16. Absen dinas luar kota (tugas lapangan)
@@ -390,7 +409,60 @@ CREATE TABLE IF NOT EXISTS duty_checkins (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------
--- 17. Foreign key app_users.employee_id
+-- 17. Riwayat perubahan jatah cuti tahunan
+--     Catatan audit setiap kali jatah berkurang (cuti tahunan disetujui),
+--     dikembalikan (pengajuan ditolak/dibatalkan), atau direset admin/HR.
+--     Memakai tabel ini alih-alih menghitung ulang dari leave_requests supaya
+--     reset tetap tidak merusak riwayat pengajuan.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS leave_quota_logs (
+  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  employee_id INT UNSIGNED NOT NULL,
+  action      ENUM('potong','kembalikan','reset','set_jatah') NOT NULL,
+  days        SMALLINT      NOT NULL DEFAULT 0 COMMENT 'Jumlah hari yang berubah (positif additions, negatif untuk pengurangan)',
+  quota_before SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  used_before  SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  used_after   SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  leave_id    INT UNSIGNED NULL COMMENT 'Pengajuan pemicu perubahan',
+  reason      VARCHAR(500) NULL,
+  actor_id    INT UNSIGNED NULL COMMENT 'Admin/HR yang melakukan perubahan',
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_quota_log_employee (employee_id, created_at),
+  KEY ix_quota_log_leave (leave_id),
+  CONSTRAINT fk_quota_log_employee FOREIGN KEY (employee_id) REFERENCES employees     (id) ON DELETE CASCADE,
+  CONSTRAINT fk_quota_log_leave    FOREIGN KEY (leave_id)    REFERENCES leave_requests(id) ON DELETE SET NULL,
+  CONSTRAINT fk_quota_log_actor    FOREIGN KEY (actor_id)    REFERENCES app_users     (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- 18. Hari libur (nasional, cuti bersama, dan tambahan manual admin)
+--     source: 'sync'   = hasil sinkronisasi dari API hari libur nasional
+--             'manual' = ditambahkan admin/HR sendiri
+--     kind  : 'nasional' | 'cuti_bersama' | 'custom'
+--     Satu tanggal hanya boleh punya satu baris, jadi admin bisa mengganti
+--     nama / jenis libur nasional tanpa menambah duplikat.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS holidays (
+  id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  holiday_date  DATE         NOT NULL,
+  name          VARCHAR(150) NOT NULL,
+  kind          ENUM('nasional','cuti_bersama','custom') NOT NULL DEFAULT 'nasional',
+  source        ENUM('sync','manual') NOT NULL DEFAULT 'manual',
+  is_workday    TINYINT(1)   NOT NULL DEFAULT 0
+                COMMENT '1 = perusahaan tetap bekerja (cuti bersama yang dipakai kerja)',
+  note          VARCHAR(255) NULL,
+  created_by    INT UNSIGNED NULL,
+  created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_holidays_date (holiday_date),
+  KEY ix_holidays_source (source),
+  CONSTRAINT fk_holidays_actor FOREIGN KEY (created_by) REFERENCES app_users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- 19. Foreign key app_users.employee_id
 --     Ditambahkan di sini (bukan di definisi tabel) karena tabel employees
 --     dibuat setelah app_users. Idempoten: dilewati bila sudah ada.
 -- ---------------------------------------------------------------------------

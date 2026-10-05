@@ -9,12 +9,45 @@
   var api = App.api;
   var esc = App.esc;
 
-  var LEAVE_TYPE_OPTIONS = [
-    { key: 'izin', label: 'Izin' },
-    { key: 'sakit', label: 'Sakit' },
-    { key: 'cuti', label: 'Cuti' },
-    { key: 'izin_meninggal', label: 'Izin Meninggal' },
-    { key: 'dinas_luar', label: 'Dinas Luar Kota' },
+  var LEAVE_CATALOG = [
+    {
+      key: 'cuti',
+      label: 'Cuti',
+      subtypes: [
+        { key: 'cuti_tahunan', label: 'Cuti Tahunan' },
+        { key: 'cuti_sakit', label: 'Cuti Sakit' },
+        { key: 'cuti_melahirkan', label: 'Cuti Melahirkan' },
+        { key: 'cuti_menikah', label: 'Cuti Menikah' },
+        { key: 'cuti_haji', label: 'Cuti Haji / Umrah' },
+        { key: 'cuti_kematian_keluarga', label: 'Cuti Kematian Keluarga' },
+        { key: 'cuti_alasan_penting', label: 'Cuti Alasan Penting' },
+        { key: 'cuti_tanpa_bayar', label: 'Cuti Tanpa Bayar' },
+        { key: 'cuti_lainnya', label: 'Cuti Lainnya' },
+      ],
+    },
+    {
+      key: 'izin',
+      label: 'Izin',
+      subtypes: [
+        { key: 'izin_tidak_masuk', label: 'Izin Tidak Masuk' },
+        { key: 'izin_terlambat', label: 'Izin Terlambat' },
+        { key: 'izin_pulang_cepat', label: 'Izin Pulang Cepat' },
+        { key: 'izin_kebutuhan_pribadi', label: 'Izin Keperluan Pribadi' },
+        { key: 'izin_keluarga', label: 'Izin Mengurus Keluarga' },
+        { key: 'izin_administrasi', label: 'Izin Mengurus Administrasi / Dokumen' },
+        { key: 'izin_sakit', label: 'Izin Sakit' },
+        { key: 'izin_meninggal', label: 'Izin Kematian Keluarga' },
+        { key: 'izin_lainnya', label: 'Izin Lainnya' },
+      ],
+    },
+    {
+      key: 'dinas',
+      label: 'Dinas',
+      subtypes: [
+        { key: 'dinas_dalam_kota', label: 'Dinas Dalam Kota', single_day: true },
+        { key: 'dinas_luar_kota', label: 'Dinas Luar Kota', single_day: false },
+      ],
+    },
   ];
 
   window.Pages = window.Pages || {};
@@ -107,9 +140,7 @@
       .then(function (res) {
         var d = res.data;
         var e = d.employee;
-        var shift = d.shift
-          ? d.shift.code + ' (' + d.shift.start_time + ' - ' + d.shift.end_time + ')'
-          : 'Belum ada shift';
+        var quota = d.leave_quota || null;
 
         el.innerHTML =
           '<div class="card-header">' +
@@ -126,13 +157,37 @@
               kv('No. HP', e.phone) +
               kv('Email', e.email) +
               kv('Alamat', e.address) +
-              kv('Shift', shift) +
             '</div>' +
-          '</div>';
+          '</div>' +
+          (quota && quota.quota > 0 ? quotaCard(quota) : '');
       })
       .catch(function (err) {
         el.innerHTML = errorBlock('Gagal memuat profil', err);
       });
+  }
+
+  /** Kartu sisa jatah cuti tahunan untuk karyawan. */
+  function quotaCard(quota) {
+    var remaining = Number(quota.remaining || 0);
+    var badge = remaining <= 0
+      ? '<span class="badge failed">Jatah habis</span>'
+      : remaining <= 2
+        ? '<span class="badge warning">Sisa ' + remaining + ' hari</span>'
+        : '<span class="badge success">Sisa ' + remaining + ' hari</span>';
+
+    return (
+      '<div class="card-body" style="border-top:1px solid var(--border)">' +
+        '<div class="stat-grid">' +
+          statBox('Jatah Cuti Tahunan', quota.quota + ' hari') +
+          statBox('Sudah Dipakai', quota.used + ' hari') +
+          statBox('Sisa Jatah', badge) +
+        '</div>' +
+        (quota.reset_at
+          ? '<div class="help">Jatah terakhir dikembalikan penuh pada ' +
+            esc(App.fmtDateTime(quota.reset_at)) + '.</div>'
+          : '') +
+      '</div>'
+    );
   }
 
   function kv(label, value) {
@@ -451,20 +506,25 @@
 
         var columns = [
           {
-            key: 'leave_type',
+            key: 'category',
+            label: 'Kategori',
+            render: function (r) {
+              var catLabel = r.category
+                ? (r.category === 'cuti' ? 'Cuti' : r.category === 'izin' ? 'Izin' : 'Dinas')
+                : '-';
+              return '<span class="badge izin">' + esc(catLabel) + '</span>';
+            },
+          },
+          {
+            key: 'subtype_label',
             label: 'Jenis',
             render: function (r) {
-              var cls = r.leave_type === 'dinas_luar' ? 'dinas_luar' : 'izin';
-              return (
-                '<span class="badge ' + cls + '">' +
-                esc(App.LEAVE_LABELS[r.leave_type] || r.leave_type) +
-                '</span>'
-              );
+              return esc(r.subtype_label || r.leave_type || '-');
             },
           },
           { key: 'start_date', label: 'Mulai' },
           { key: 'end_date', label: 'Selesai' },
-          { key: 'reason', label: 'Alasan' },
+          { key: 'reason', label: 'Keterangan' },
           {
             key: 'status',
             label: 'Status',
@@ -535,25 +595,29 @@
   }
 
   function openLeaveForm() {
-    var options = LEAVE_TYPE_OPTIONS.map(function (o) {
-      return '<option value="' + esc(o.key) + '">' + esc(o.label) + '</option>';
+    var categoryOptions = LEAVE_CATALOG.map(function (c) {
+      return '<option value="' + esc(c.key) + '">' + esc(c.label) + '</option>';
     }).join('');
 
     App.modal({
-      title: 'Pengajuan Izin / Cuti / Dinas Luar',
+      title: 'Pengajuan Izin / Cuti / Dinas',
       bodyHtml:
-        '<div class="field"><label>Jenis Pengajuan <span class="req">*</span></label>' +
-          '<select id="lfType">' + options + '</select></div>' +
+        '<div class="field"><label>Kategori Pengajuan <span class="req">*</span></label>' +
+          '<select id="lfCategory">' + categoryOptions + '</select></div>' +
+        '<div class="field" id="lfSubtypeWrap"><label>Jenis <span class="req">*</span></label>' +
+          '<select id="lfSubtype"></select></div>' +
+        '<div class="field" id="lfPlaceWrap" style="display:none"><label>Tujuan / Lokasi <span class="req">*</span></label>' +
+          '<input type="text" id="lfPlace" maxlength="150" placeholder="Contoh: Kantor cabang Surabaya"></div>' +
         '<div class="form-grid">' +
           '<div class="field"><label>Tanggal Mulai <span class="req">*</span></label>' +
             '<input type="date" id="lfStart" value="' + esc(App.today()) + '"></div>' +
-          '<div class="field"><label>Tanggal Selesai</label>' +
+          '<div class="field" id="lfEndWrap"><label>Tanggal Selesai <span class="req">*</span></label>' +
             '<input type="date" id="lfEnd" value="' + esc(App.today()) + '">' +
             '<span class="help">Kosongkan bila hanya satu hari.</span></div>' +
         '</div>' +
-        '<div class="field"><label>Alasan</label>' +
+        '<div class="field"><label>Keterangan / Alasan <span class="req">*</span></label>' +
           '<textarea id="lfReason" rows="3" maxlength="500" ' +
-            'placeholder="Jelaskan alasan pengajuan"></textarea></div>' +
+            'placeholder="Jelaskan keterangan pengajuan"></textarea></div>' +
         '<div class="callout">Pengajuan diteruskan ke admin/HR untuk persetujuan. ' +
           'Check-in GPS + selfie untuk dinas luar kota baru bisa dilakukan setelah disetujui.</div>',
       actions: [
@@ -562,22 +626,33 @@
           label: 'Kirim Pengajuan',
           className: 'primary',
           onClick: function (el) {
+            var category = el.querySelector('#lfCategory').value;
+            var subtype = el.querySelector('#lfSubtype').value;
             var start = el.querySelector('#lfStart').value;
             var end = el.querySelector('#lfEnd').value || start;
             var reason = el.querySelector('#lfReason').value.trim();
+            var place = el.querySelector('#lfPlace').value.trim();
 
             if (!start) {
               App.toast('Tanggal mulai wajib diisi.', 'error');
               return false;
             }
+            if (!reason) {
+              App.toast('Keterangan wajib diisi.', 'error');
+              return false;
+            }
+
+            var payload = {
+              category: category,
+              subtype: subtype,
+              start_date: start,
+              end_date: end,
+              reason: reason,
+            };
+            if (place) payload.place = place;
 
             api
-              .post('/me/leaves', {
-                leave_type: el.querySelector('#lfType').value,
-                start_date: start,
-                end_date: end,
-                reason: reason,
-              })
+              .post('/me/leaves', payload)
               .then(function () {
                 App.toast('Pengajuan terkirim, menunggu persetujuan.', 'success');
                 el.closeModal();
@@ -594,6 +669,64 @@
         },
       ],
     });
+
+    bindLeaveForm();
+  }
+
+  function bindLeaveForm() {
+    var categorySelect = document.getElementById('lfCategory');
+    var subtypeSelect = document.getElementById('lfSubtype');
+    var subtypeWrap = document.getElementById('lfSubtypeWrap');
+    var placeWrap = document.getElementById('lfPlaceWrap');
+    var endWrap = document.getElementById('lfEndWrap');
+    if (!categorySelect || !subtypeSelect) return;
+
+    function updateForm() {
+      var catKey = categorySelect.value;
+      var cat = null;
+      for (var i = 0; i < LEAVE_CATALOG.length; i++) {
+        if (LEAVE_CATALOG[i].key === catKey) { cat = LEAVE_CATALOG[i]; break; }
+      }
+      if (!cat) {
+        subtypeWrap.style.display = 'none';
+        placeWrap.style.display = 'none';
+        endWrap.style.display = '';
+        return;
+      }
+
+      subtypeWrap.style.display = '';
+      subtypeSelect.innerHTML = cat.subtypes.map(function (s) {
+        return '<option value="' + esc(s.key) + '">' + esc(s.label) + '</option>';
+      }).join('');
+
+      var sub = cat.subtypes[0];
+      var isDinas = catKey === 'dinas';
+      var isSingleDay = sub && sub.single_day;
+
+      placeWrap.style.display = isDinas ? '' : 'none';
+      endWrap.style.display = isSingleDay ? 'none' : '';
+    }
+
+    categorySelect.addEventListener('change', updateForm);
+    subtypeSelect.addEventListener('change', function () {
+      var catKey = categorySelect.value;
+      var cat = null;
+      for (var i = 0; i < LEAVE_CATALOG.length; i++) {
+        if (LEAVE_CATALOG[i].key === catKey) { cat = LEAVE_CATALOG[i]; break; }
+      }
+      if (!cat) return;
+      var sub = null;
+      for (var j = 0; j < cat.subtypes.length; j++) {
+        if (cat.subtypes[j].key === subtypeSelect.value) { sub = cat.subtypes[j]; break; }
+      }
+      if (!sub) return;
+      var isDinas = catKey === 'dinas';
+      var isSingleDay = sub.single_day;
+      placeWrap.style.display = isDinas ? '' : 'none';
+      endWrap.style.display = isSingleDay ? 'none' : '';
+    });
+
+    updateForm();
   }
 
   // --------------------------------------------------------- Rekap kehadiran
@@ -608,7 +741,6 @@
         var d = res.data;
         var columns = [
           { key: 'tanggal', label: 'Tanggal' },
-          { key: 'shift_code', label: 'Shift' },
           { key: 'jam_masuk', label: 'Jam Masuk' },
           { key: 'jam_keluar', label: 'Jam Keluar' },
           { key: 'jam_kerja', label: 'Jam Kerja', align: 'right' },

@@ -9,6 +9,9 @@ const { wrap } = require('../middleware/error');
 const { badRequest, notFound } = require('../utils/errors');
 const employees = require('../services/employees');
 const attendance = require('../services/attendance');
+const leaveCatalog = require('../services/leaveCatalog');
+const leaveQuota = require('../services/leaveQuota');
+const audit = require('../services/audit');
 const { parseCsv, detectDelimiter } = require('../devices/csv/adapter');
 const { toDate } = require('../utils/date');
 
@@ -62,6 +65,16 @@ router.post(
   auth.requirePermission('employees:write'),
   wrap(async (req, res) => {
     const employee = await employees.create(req.body || {});
+
+    await audit.record({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'employee.create',
+      entity: 'employees',
+      entityId: employee.id,
+      detail: employee,
+    });
+
     res.status(201).json({ ok: true, data: employee });
   })
 );
@@ -70,8 +83,83 @@ router.put(
   '/:id',
   auth.requirePermission('employees:write'),
   wrap(async (req, res) => {
-    const employee = await employees.update(Number(req.params.id), req.body || {});
+    const before = await employees.getOrFail(Number(req.params.id));
+    const employee = await employees.update(Number(req.params.id), req.body || {}, {
+      actorId: req.user.id,
+    });
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'employee.update',
+      entity: 'employees',
+      entityId: employee.id,
+      before,
+      after: employee,
+    });
+
     res.json({ ok: true, data: employee });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Jatah cuti tahunan
+// ---------------------------------------------------------------------------
+
+/** Ringkasan jatah cuti tahunan seorang karyawan. */
+router.get(
+  '/:id/leave-quota',
+  auth.requirePermission('employees:read'),
+  wrap(async (req, res) => {
+    const employeeId = Number(req.params.id);
+    await employees.getOrFail(employeeId);
+
+    const [summary, logs] = await Promise.all([
+      leaveQuota.getSummary(employeeId),
+      leaveQuota.history(employeeId, { limit: req.query.limit || 50 }),
+    ]);
+
+    res.json({ ok: true, data: { ...summary, logs } });
+  })
+);
+
+/**
+ * Kembalikan jatah cuti tahunan ke jumlah semula.
+ * Status pengajuan yang sudah disetujui tidak diubah, hanya hitungannya.
+ */
+router.post(
+  '/:id/leave-quota/reset',
+  auth.requirePermission('employees:write'),
+  wrap(async (req, res) => {
+    const employeeId = Number(req.params.id);
+    const employee = await employees.getOrFail(employeeId);
+
+    const result = await leaveQuota.reset(employeeId, {
+      actorId: req.user.id,
+      reason: req.body?.reason ? String(req.body.reason).trim().slice(0, 500) : 'Reset jatah cuti oleh admin/HR',
+    });
+
+    await audit.record({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'leave_quota.reset',
+      entity: 'employees',
+      entityId: employeeId,
+      detail: {
+        employee: `${employee.employee_code} - ${employee.name}`,
+        jatah: result.quota,
+        terpakai_sebelum: result.used_before,
+        terpakai_setelah: result.used,
+      },
+    });
+
+    res.json({
+      ok: true,
+      message: result.changed
+        ? `Jatah cuti tahunan ${employee.name} dikembalikan menjadi ${result.remaining} hari.`
+        : `Jatah cuti tahunan ${employee.name} sudah penuh (${result.remaining} hari), tidak ada yang dikembalikan.`,
+      data: result,
+    });
   })
 );
 
@@ -80,6 +168,19 @@ router.delete(
   auth.requirePermission('employees:delete'),
   wrap(async (req, res) => {
     const result = await employees.remove(Number(req.params.id));
+
+    await audit.record({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: result.archived ? 'employee.archive' : 'employee.delete',
+      entity: 'employees',
+      entityId: result.employee.id,
+      detail: {
+        employee: `${result.employee.employee_code} - ${result.employee.name}`,
+        catatan: result.message,
+      },
+    });
+
     res.json({ ok: true, ...result });
   })
 );
@@ -211,22 +312,93 @@ router.post(
     const employeeId = Number(req.params.id);
     await employees.getOrFail(employeeId);
 
-    const { leave_type: type, start_date: start, end_date: end, reason } = req.body || {};
-    const allowed = ['izin', 'sakit', 'cuti', 'izin_meninggal', 'dinas_luar'];
-    if (!allowed.includes(type)) throw badRequest(`leave_type tidak valid. Pilihan: ${allowed.join(', ')}.`);
+    const payload = req.body || {};
+    const categoryKey = payload.category ? String(payload.category) : '';
+    const subtypeKey = payload.subtype ? String(payload.subtype) : '';
 
-    const startDate = toDate(start);
-    const endDate = toDate(end || start);
-    if (!startDate || !endDate) throw badRequest('start_date / end_date tidak valid.');
-    if (endDate < startDate) throw badRequest('end_date tidak boleh lebih awal dari start_date.');
+    const category = categoryKey ? leaveCatalog.findCategory(categoryKey) : null;
+    if (categoryKey && !category) {
+      throw badRequest(
+        `Kategori pengajuan tidak valid. Pilihan: ${leaveCatalog.CATEGORIES.map((c) => c.key).join(', ')}.`
+      );
+    }
+
+    const subtype = leaveCatalog.findSubtype(subtypeKey);
+    if (subtypeKey && !subtype) {
+      throw badRequest('Jenis pengajuan tidak valid untuk kategori yang dipilih.');
+    }
+    if (subtype && category && subtype.category !== category.key) {
+      throw badRequest(`Jenis "${subtype.label}" tidak termasuk kategori ${category.label}.`);
+    }
+    if (!subtype) {
+      throw badRequest(
+        `Jenis pengajuan wajib dipilih. Pilihan kategori: ${leaveCatalog.CATEGORIES.map((c) => c.label).join(', ')}.`
+      );
+    }
+
+    const startDate = toDate(payload.start_date);
+    if (!startDate) throw badRequest('Tanggal mulai wajib diisi.');
+
+    const endDate = subtype.single_day ? startDate : toDate(payload.end_date || startDate);
+    if (!endDate) throw badRequest('Tanggal selesai tidak valid.');
+    if (endDate < startDate) throw badRequest('Tanggal selesai tidak boleh lebih awal dari tanggal mulai.');
+
+    if (!subtype.needs_place && payload.place) {
+      throw badRequest('Lokasi hanya diisi untuk pengajuan dinas.');
+    }
+    const place = subtype.needs_place
+      ? String(payload.place || '').trim().slice(0, 150) || null
+      : null;
+    if (subtype.needs_place && !place) {
+      throw badRequest(`Lokasi/tujuan wajib diisi untuk ${subtype.label}.`);
+    }
+
+    const reason = payload.reason ? String(payload.reason).trim().slice(0, 500) : null;
+
+    // Admin/HR boleh mencatat pengajuan atas nama karyawan. Status awal
+    // default 'pending' (ikut alur persetujuan), atau langsung 'approved'
+    // bila pengajuan dicatat beserta persetujuannya.
+    const initialStatus = payload.status === 'approved' ? 'approved' : 'pending';
+    const reviewNote = payload.review_note
+      ? String(payload.review_note).trim().slice(0, 500)
+      : null;
 
     const result = await db.execute(
-      'INSERT INTO leave_requests (employee_id, leave_type, start_date, end_date, reason) VALUES (?, ?, ?, ?, ?)',
-      [employeeId, type, startDate, endDate, reason || null]
+      `INSERT INTO leave_requests
+         (employee_id, leave_type, subtype, place, start_date, end_date, reason,
+          status, reviewed_by, reviewed_at, review_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${initialStatus === 'approved' ? 'NOW()' : 'NULL'}, ?)`,
+      [
+        employeeId,
+        subtype.leave_type,
+        subtype.key,
+        place,
+        startDate,
+        endDate,
+        reason,
+        initialStatus,
+        initialStatus === 'approved' ? req.user.id : null,
+        reviewNote,
+      ]
     );
 
     const row = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [result.insertId]);
-    res.status(201).json({ ok: true, data: row });
+
+    // Hitung dulu jumlah hari kerja yang akan dipotong dari jatah cuti tahunan
+    // supaya angkanya final ketika pengajuan ini disetujui.
+    await leaveQuota.prepareLeave(row);
+
+    // Pengajuan yang langsung disetujui harus langsung masuk ke rekap harian
+    // supaya status izin/cuti/dinas di laporan tidak menunggu backfill.
+    if (row.status === 'approved') {
+      await attendance.generate({ from: startDate, to: endDate, employeeId });
+      await leaveQuota.applyLeaveChange(row, 'potong', {
+        actorId: req.user.id,
+        reason: 'Pengajuan cuti tahunan dicatat langsung sebagai approved',
+      });
+    }
+
+    res.status(201).json({ ok: true, data: decorateLeave(row) });
   })
 );
 
@@ -239,19 +411,74 @@ router.put(
       throw badRequest("status harus 'approved', 'rejected', atau 'pending'.");
     }
 
+    const leaveId = Number(req.params.leaveId);
+    const before = await db.queryOne(
+      `SELECT lr.*, e.name AS employee_name
+         FROM leave_requests lr
+         JOIN employees e ON e.id = lr.employee_id
+        WHERE lr.id = ?`,
+      [leaveId]
+    );
+    if (!before) throw notFound('Pengajuan tidak ditemukan.');
+
+    // Pengajuan lama mungkin belum punya quota_days, jadi dihitung sekarang
+    // bila jenisnya cuti tahunan.
+    if (leaveQuota.usesQuota(before) && Number(before.quota_days || 0) === 0) {
+      await leaveQuota.prepareLeave(before);
+    }
+
+    // Cuti tahunan tidak boleh disetujui bila jatah sudah habis, kecuali admin
+    // mengirim force: true (mis. persetujuan karena keadaan mendesak).
+    if (decision === 'approved' && before.status !== 'approved') {
+      const check = await leaveQuota.checkQuota(before, { force: req.body?.force === true });
+      if (!check.ok) throw badRequest(check.message);
+    }
+
     const result = await db.execute(
       'UPDATE leave_requests SET status = ?, reviewed_by = ?, reviewed_at = NOW(), review_note = ? WHERE id = ?',
-      [decision, req.user.id, req.body?.review_note || null, Number(req.params.leaveId)]
+      [decision, req.user.id, req.body?.review_note || null, leaveId]
     );
 
     if (result.affectedRows === 0) throw notFound('Pengajuan tidak ditemukan.');
 
-    const row = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [Number(req.params.leaveId)]);
+    const row = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [leaveId]);
+
+    // Jatah cuti tahunan mengikuti perpindahan status: disetujui memotong,
+    // ditolak/dibatalkan/ditarik kembali mengembalikan jumlah yang dipotong.
+    if (before.status !== 'approved' && decision === 'approved') {
+      await leaveQuota.applyLeaveChange(row, 'potong', {
+        actorId: req.user.id,
+        reason: 'Pengajuan cuti tahunan disetujui',
+      });
+    } else if (before.status === 'approved' && decision !== 'approved') {
+      await leaveQuota.applyLeaveChange(before, 'kembalikan', {
+        actorId: req.user.id,
+        reason: 'Persetujuan cuti tahunan ditarik kembali',
+      });
+    }
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'leave.review',
+      entity: 'leave_requests',
+      entityId: leaveId,
+      before: { status: before.status, review_note: before.review_note },
+      after: { status: row.status, review_note: req.body?.review_note || null },
+      detail: {
+        employee: before.employee_name,
+        jenis: leaveQuota.leaveLabel(before),
+        tanggal: `${row.start_date} s/d ${row.end_date}`,
+        dipaksa: req.body?.force === true,
+      },
+    });
 
     // Status rekap harian ikut dihitung ulang supaya izin/cuti/dinas yang baru
     // disetujui langsung terlihat di laporan tanpa menunggu backfill.
-    const rangeStart = row.status === 'approved' ? row.start_date : row.end_date;
-    const rangeEnd = row.status === 'approved' ? row.end_date : row.start_date;
+    // Rentang selalu diurutkan: menyetujui dan mencabut persetujuan sama-sama
+    // perlu menghitung ulang seluruh rentang pengajuan.
+    const rangeStart = row.start_date < row.end_date ? row.start_date : row.end_date;
+    const rangeEnd = row.start_date < row.end_date ? row.end_date : row.start_date;
     if (rangeStart && rangeEnd) {
       await attendance.generate({
         from: rangeStart,
@@ -277,7 +504,219 @@ router.get(
         WHERE lr.status = 'pending'
         ORDER BY lr.start_date ASC`
     );
-    res.json({ ok: true, data: rows });
+
+    // Sisa jatah cuti tahunan dilampirkan supaya pengaju yang bisa langsung
+    // melihat apakah pengajuannya masih muat tanpa membuka detail karyawan.
+    const quotas = await leaveQuota.getSummaryMap(rows.map((row) => row.employee_id));
+    res.json({ ok: true, data: rows.map((row) => decorateLeave(row, quotas[row.employee_id])) });
+  })
+);
+
+/**
+ * Riwayat pengajuan cuti/izin/dinas beserta statusnya (pending, approved,
+ * rejected). Dipakai admin untuk melihat pengajuan yang sudah diputuskan.
+ */
+router.get(
+  '/leaves/history',
+  auth.requirePermission('attendance:read'),
+  wrap(async (req, res) => {
+    const { where, params } = leaveHistoryFilter(req.query);
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+
+    const rows = await db.queryAll(
+      `SELECT lr.*, e.name AS employee_name, e.employee_code,
+              u.username AS reviewer_name, u.full_name AS reviewer_full_name
+         FROM leave_requests lr
+         JOIN employees e ON e.id = lr.employee_id
+         LEFT JOIN app_users u ON u.id = lr.reviewed_by
+        ${where}
+        ORDER BY lr.created_at DESC, lr.id DESC
+        LIMIT ${limit}`,
+      params
+    );
+
+    const counts = await db.queryOne(
+      `SELECT SUM(status = 'pending') AS pending,
+              SUM(status = 'approved') AS approved,
+              SUM(status = 'rejected') AS rejected
+         FROM leave_requests`
+    );
+
+    res.json({
+      ok: true,
+      data: rows.map(decorateLeave),
+      meta: {
+        total: rows.length,
+        counts: {
+          pending: Number(counts.pending || 0),
+          approved: Number(counts.approved || 0),
+          rejected: Number(counts.rejected || 0),
+        },
+      },
+    });
+  })
+);
+
+function leaveHistoryFilter(query = {}) {
+  const where = [];
+  const params = [];
+  const status = query.status ? String(query.status).trim() : '';
+  if (status && status !== 'all') {
+    const list = status.split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length > 0) {
+      where.push(`lr.status IN (${list.map(() => '?').join(', ')})`);
+      params.push(...list);
+    }
+  }
+  if (query.employee_id) {
+    where.push('lr.employee_id = ?');
+    params.push(Number(query.employee_id));
+  }
+  return { where: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', params };
+}
+
+/** Tambahkan label kategori/jenis/status agar frontend tidak perlu kamus sendiri. */
+function decorateLeave(row, quota = null) {
+  const days = Number(row.quota_days || 0);
+  return {
+    ...row,
+    category: leaveCatalog.categoryForLeave(row.leave_type, row.subtype),
+    subtype_label: leaveCatalog.findSubtype(row.subtype)?.label || null,
+    status_label: statusLabel(row.status),
+    date_range: row.start_date === row.end_date ? row.start_date : `${row.start_date} s/d ${row.end_date}`,
+    reviewer: row.reviewer_full_name || row.reviewer_name || null,
+    // Kvota cuti tahunan hanya relevan untuk sub-jenis cuti tahunan.
+    uses_quota: leaveQuota.usesQuota(row),
+    quota_days: days,
+    leave_quota: quota,
+    quota_short: quota ? days > quota.remaining : false,
+  };
+}
+
+function statusLabel(status) {
+  if (status === 'approved') return 'Disetujui';
+  if (status === 'rejected') return 'Ditolak';
+  if (status === 'pending') return 'Menunggu';
+  return String(status || '-');
+}
+
+/** Daftar reimburse yang menunggu persetujuan. */
+router.get(
+  '/reimburses/pending',
+  auth.requirePermission('attendance:read'),
+  wrap(async (req, res) => {
+    const rows = await db.queryAll(
+      `SELECT r.*, e.name AS employee_name, e.employee_code
+         FROM reimburses r
+         JOIN employees e ON e.id = r.employee_id
+        WHERE r.status = 'pending'
+        ORDER BY r.created_at ASC`
+    );
+    res.json({ ok: true, data: rows.map(decorateReimburse) });
+  })
+);
+
+/** Riwayat reimburse beserta statusnya. */
+router.get(
+  '/reimburses/history',
+  auth.requirePermission('attendance:read'),
+  wrap(async (req, res) => {
+    const where = [];
+    const params = [];
+    const status = req.query.status ? String(req.query.status).trim() : '';
+    if (status && status !== 'all') {
+      const list = status.split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length > 0) {
+        where.push(`r.status IN (${list.map(() => '?').join(', ')})`);
+        params.push(...list);
+      }
+    }
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
+
+    const rows = await db.queryAll(
+      `SELECT r.*, e.name AS employee_name, e.employee_code,
+              u.username AS reviewer_name, u.full_name AS reviewer_full_name
+         FROM reimburses r
+         JOIN employees e ON e.id = r.employee_id
+         LEFT JOIN app_users u ON u.id = r.reviewed_by
+        ${where.length > 0 ? 'WHERE ' + where.join(' AND ') : ''}
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT ${limit}`,
+      params
+    );
+
+    const counts = await db.queryOne(
+      `SELECT SUM(status = 'pending') AS pending,
+              SUM(status = 'approved') AS approved,
+              SUM(status = 'rejected') AS rejected
+         FROM reimburses`
+    );
+
+    res.json({
+      ok: true,
+      data: rows.map(decorateReimburse),
+      meta: {
+        total: rows.length,
+        counts: {
+          pending: Number(counts.pending || 0),
+          approved: Number(counts.approved || 0),
+          rejected: Number(counts.rejected || 0),
+        },
+      },
+    });
+  })
+);
+
+function decorateReimburse(row) {
+  return {
+    ...row,
+    status_label: statusLabel(row.status),
+    reviewer: row.reviewer_full_name || row.reviewer_name || null,
+  };
+}
+
+/** Review reimburse (approve/reject). */
+router.put(
+  '/reimburses/:reimburseId/review',
+  auth.requirePermission('attendance:write'),
+  wrap(async (req, res) => {
+    const decision = req.body?.status;
+    if (!['approved', 'rejected'].includes(decision)) {
+      throw badRequest("status harus 'approved' atau 'rejected'.");
+    }
+
+    const beforeStatus = await db.queryScalar(
+      'SELECT status FROM reimburses WHERE id = ?',
+      [Number(req.params.reimburseId)]
+    );
+
+    const result = await db.execute(
+      'UPDATE reimburses SET status = ?, reviewed_by = ?, reviewed_at = NOW() WHERE id = ?',
+      [decision, req.user.id, Number(req.params.reimburseId)]
+    );
+
+    if (result.affectedRows === 0) throw notFound('Reimburse tidak ditemukan.');
+
+    const row = await db.queryOne('SELECT * FROM reimburses WHERE id = ?', [
+      Number(req.params.reimburseId),
+    ]);
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'reimburse.review',
+      entity: 'reimburses',
+      entityId: row.id,
+      before: { status: beforeStatus },
+      after: { status: row.status, review_note: req.body?.review_note || null },
+      detail: {
+        employee_id: row.employee_id,
+        jumlah: row.amount,
+        keterangan: row.description,
+      },
+    });
+
+    res.json({ ok: true, data: row });
   })
 );
 
@@ -304,10 +743,12 @@ router.get(
   auth.requirePermission('attendance:read'),
   wrap(async (req, res) => {
     const rows = await db.queryAll(
-      `SELECT id, employee_code, name, device_user_id
-         FROM employees
-        WHERE status = 'aktif'
-        ORDER BY name`
+      `SELECT e.id, e.employee_code, e.name, e.device_user_id,
+              e.department_id, dep.name AS department_name
+         FROM employees e
+         LEFT JOIN departments dep ON dep.id = e.department_id
+        WHERE e.status = 'aktif'
+        ORDER BY e.name`
     );
     res.json({ ok: true, data: rows });
   })

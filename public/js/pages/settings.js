@@ -18,7 +18,8 @@
         '<div class="card-header">' +
           '<div class="btn-group">' +
             '<button class="btn ' + (tab === 'general' ? 'primary' : '') + '" data-tab="general">Pengaturan Umum</button>' +
-            '<button class="btn ' + (tab === 'attendance' ? 'primary' : '') + '" data-tab="attendance">Absensi &amp; Jam Kerja</button>' +
+            '<button class="btn ' + (tab === 'attendance' ? 'primary' : '') + '" data-tab="attendance">Jadwal Global</button>' +
+            '<button class="btn ' + (tab === 'holiday' ? 'primary' : '') + '" data-tab="holiday">Hari Libur</button>' +
             '<button class="btn ' + (tab === 'device' ? 'primary' : '') + '" data-tab="device">Perangkat &amp; Sinkron</button>' +
             '<button class="btn ' + (tab === 'notify' ? 'primary' : '') + '" data-tab="notify">Notifikasi</button>' +
             '<button class="btn ' + (tab === 'system' ? 'primary' : '') + '" data-tab="system">Status Sistem</button>' +
@@ -55,6 +56,7 @@
         cached = res.data || {};
         if (tab === 'general') paintGeneral(cached, box);
         else if (tab === 'attendance') paintAttendance(cached, box);
+        else if (tab === 'holiday') paintHoliday(cached, box);
         else if (tab === 'device') paintDevice(cached, box);
         else if (tab === 'notify') paintNotify(cached, box);
         else paintSystem(box);
@@ -80,6 +82,56 @@
     return ['1', 'true', 'yes', 'on', 'ya'].indexOf(String(v).toLowerCase()) >= 0;
   }
 
+  var DAY_NAMES = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+
+  /**
+   * Pemilih hari kerja (1..7 = Senin..Minggu, sama seperti shifts.work_days).
+   * Nilai disimpan sebagai input tersembunyi "1,2,3,4,5" agar cocok dengan
+   * kolom work_days di tabel shifts.
+   */
+  function workDaysField(value) {
+    var selected = String(value || '1,2,3,4,5')
+      .split(',')
+      .map(function (v) { return Number(v.trim()); })
+      .filter(function (v) { return v >= 1 && v <= 7; });
+    if (selected.length === 0) selected = [1, 2, 3, 4, 5];
+
+    var boxes = DAY_NAMES.map(function (name, i) {
+      var day = i + 1;
+      var on = selected.indexOf(day) >= 0;
+      return '<div class="field checkbox full" style="grid-column:auto">' +
+        '<input type="checkbox" class="wdDay" value="' + day + '" id="wd' + day + '"' + (on ? ' checked' : '') + '>' +
+        '<label for="wd' + day + '">' + name + '</label></div>';
+    }).join('');
+
+    return '<div class="field full"><label for="global_work_days">Hari Kerja</label>' +
+      '<input type="hidden" id="global_work_days" value="' + esc(selected.join(',')) + '">' +
+      '<div class="row" id="wdRow" style="gap:14px;flex-wrap:wrap">' + boxes + '</div>' +
+      '<span class="help">Hari yang tidak dicentang tidak dihitung sebagai hari kerja (tidak menambah persentase kehadiran, tidak menambah alpa).</span>' +
+      '</div>';
+  }
+
+  /**
+   * Sinkronkan input tersembunyi global_work_days dengan checkbox hari.
+   * Mengembalikan undefined bila tab Jadwal Global tidak sedang tampil, supaya
+   * payload tidak menimpa nilai global_work_days yang sudah tersimpan.
+   */
+  function syncWorkDays() {
+    var hidden = document.getElementById('global_work_days');
+    if (!hidden) return undefined;
+    var picked = Array.prototype.slice
+      .call(document.querySelectorAll('.wdDay'))
+      .filter(function (cb) { return cb.checked; })
+      .map(function (cb) { return Number(cb.value); })
+      .sort(function (a, b) { return a - b; });
+    if (picked.length === 0) {
+      App.toast('Pilih minimal satu hari kerja.', 'error');
+      return undefined;
+    }
+    hidden.value = picked.join(',');
+    return hidden.value;
+  }
+
   function paintGeneral(s, box) {
     box.innerHTML =
       '<div class="card">' +
@@ -103,7 +155,26 @@
     box.innerHTML =
       '<div class="grid-2">' +
         '<div class="card">' +
-          '<div class="card-header"><div><h2 class="card-title">Perilaku Absensi</h2><p class="card-subtitle">Aturan global perhitungan absensi</p></div></div>' +
+          '<div class="card-header"><div><h2 class="card-title">Jadwal Global</h2>' +
+          '<p class="card-subtitle">Hari kerja, jam masuk, jam pulang, dan jam istirahat</p></div></div>' +
+          '<div class="card-body">' +
+            '<div class="form-grid">' +
+              workDaysField(s.global_work_days) +
+              field('Jam Masuk (HH:MM)', 'global_check_in', s.global_check_in, 'time') +
+              field('Jam Pulang (HH:MM)', 'global_check_out', s.global_check_out, 'time') +
+              field('Istirahat Mulai (HH:MM)', 'global_break_start', s.global_break_start || '', 'time', 'Kosongkan bila tidak ada istirahat') +
+              field('Istirahat Selesai (HH:MM)', 'global_break_end', s.global_break_end || '', 'time', 'Kosongkan bila tidak ada istirahat') +
+              field('Toleransi Terlambat (menit)', 'global_late_tolerance', s.global_late_tolerance, 'number', '', '0', '240') +
+              '<div class="field checkbox full"><input type="checkbox" id="use_global_when_no_shift"' + (toBool(s.use_global_when_no_shift) ? ' checked' : '') + '><label for="use_global_when_no_shift">Pakai Jadwal Global bila karyawan tidak punya shift</label></div>' +
+            '</div>' +
+            '<div class="callout mt"><strong>Siapa yang memakai Jadwal Global?</strong>' +
+            'Hanya karyawan yang <strong>tidak punya shift</strong>. Karyawan dengan shift sendiri ' +
+            'mengikuti jam shift-nya. Urutan aturan: Jadwal per tanggal &gt; Shift Default Karyawan &gt; Jadwal Global.</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card">' +
+          '<div class="card-header"><div><h2 class="card-title">Perilaku Absensi</h2><p class="card-subtitle">Aturan umum perhitungan absensi</p></div></div>' +
           '<div class="card-body">' +
             '<div class="form-grid">' +
               field('Batas Akhir Scan (HH:MM:SS)', 'attendance_cutoff_time', s.attendance_cutoff_time, 'text', '23:59:59', '', '', 'Karyawan dianggap alpa jika belum absen setelah melewati batas ini') +
@@ -113,24 +184,66 @@
             '</div>' +
           '</div>' +
         '</div>' +
+      '</div>';
 
+    bindSave();
+  }
+
+  function paintHoliday(s, box) {
+    box.innerHTML =
+      '<div class="grid-2">' +
         '<div class="card">' +
-          '<div class="card-header"><div><h2 class="card-title">Jam Kerja Global</h2><p class="card-subtitle">Dipakai jika karyawan tidak memiliki Shift &amp; Jadwal</p></div></div>' +
+          '<div class="card-header"><div><h2 class="card-title">Sinkronisasi Hari Libur</h2>' +
+          '<p class="card-subtitle">Ambil daftar libur nasional Indonesia dari API secara otomatis</p></div></div>' +
           '<div class="card-body">' +
             '<div class="form-grid">' +
-              '<div class="field checkbox full"><input type="checkbox" id="use_global_when_no_shift"' + (toBool(s.use_global_when_no_shift) ? ' checked' : '') + '><label for="use_global_when_no_shift">Gunakan Jam Kerja Global bila tidak ada Shift</label></div>' +
-              field('Jam Masuk Global (HH:MM)', 'global_check_in', s.global_check_in, 'time') +
-              field('Jam Pulang Global (HH:MM)', 'global_check_out', s.global_check_out, 'time') +
-              field('Toleransi Keterlambatan (menit)', 'global_late_tolerance', s.global_late_tolerance, 'number', '', '0', '240') +
-              field('Istirahat Mulai (opsional)', 'global_break_start', s.global_break_start || '', 'time') +
-              field('Istirahat Selesai (opsional)', 'global_break_end', s.global_break_end || '', 'time') +
+              '<div class="field checkbox full"><input type="checkbox" id="holiday_sync_enabled"' +
+                (toBool(s.holiday_sync_enabled) ? ' checked' : '') + '>' +
+                '<label for="holiday_sync_enabled">Sinkronkan hari libur nasional otomatis</label></div>' +
+              field('Interval Sinkron (hari)', 'holiday_sync_interval_days', s.holiday_sync_interval_days, 'number', '', '1', '365',
+                'Berapa lama jarak antar sinkronisasi. 30 = sekali sebulan.') +
+              field('Tahun ke Depan', 'holiday_sync_years_ahead', s.holiday_sync_years_ahead, 'number', '', '0', '5',
+                'Besides tahun berjalan, berapa tahun berikutnya ikut diunduh. 1 = sampai tahun depan.') +
+              '<div class="field"><label>Sinkron Terakhir</label>' +
+                '<input type="text" id="holiday_sync_last_at" value="' +
+                esc(s.holiday_sync_last_at ? App.fmtDate(s.holiday_sync_last_at) : 'belum pernah') + '" disabled>' +
+                '<span class="help">Diisi otomatis oleh sistem.</span></div>' +
             '</div>' +
-            '<div class="callout mt"><strong>Prioritas aturan jam kerja:</strong> Jadwal per tanggal (Shift Override) &gt; Shift Default Karyawan &gt; <strong>Jam Kerja Global</strong>.</div>' +
+            '<div class="callout mt"><strong>Cara kerjanya</strong> ' +
+              'Saat server berjalan, daftar libur diunduh dari API publik hari libur nasional Indonesia (gratis, tanpa API key) ' +
+              'bila sudah lewat interval di atas. Hasilnya disimpan di tabel <code>holidays</code>, jadi rekap absensi tetap bisa ' +
+              'dihitung walau internet mati. Tanggal libur otomatis berstatus <strong>Hari Libur</strong> dan tidak dihitung alpa.</div>' +
+            '<div class="callout mt"><strong>Tambah hari libur sendiri</strong> ' +
+              'Buka menu <strong>Hari Libur</strong> untuk menambah libur tambahan perusahaan atau mengubah data hasil sinkronisasi. ' +
+              'Perubahan manual tidak akan ditimpa saat sinkron ulang.</div>' +
           '</div>' +
+        '</div>' +
+        '<div class="card">' +
+          '<div class="card-header"><div><h2 class="card-title">Libur Tambahan</h2>' +
+          '<p class="card-subtitle">Daftar libur yang akan datang</p></div>' +
+          '<div id="hlPreview"></div>' +
         '</div>' +
       '</div>';
 
     bindSave();
+
+    // Pratinjau 8 libur terdekat supaya admin bisa sanity-check tanpa pindah menu.
+    api.get('/holidays/upcoming?days=180')
+      .then(function (res) {
+        var list = (res.data || []).slice(0, 8);
+        var target = document.getElementById('hlPreview');
+        if (!target) return;
+        target.style.padding = '14px 16px';
+        target.innerHTML = list.length === 0
+          ? '<div class="small faint">Belum ada hari libur terdaftar. Klik "Sinkronkan dari API" di menu Hari Libur.</div>'
+          : list.map(function (h) {
+              return '<div class="small" style="padding:3px 0">' +
+                '<strong>' + esc(App.fmtDate(h.holiday_date)) + '</strong> - ' + esc(h.name) +
+                (Number(h.is_workday) === 1 ? ' <span class="badge warning">Tetap bekerja</span>' : '') +
+                '</div>';
+            }).join('');
+      })
+      .catch(function () {});
   }
 
   function paintDevice(s, box) {
@@ -182,6 +295,29 @@
             '</div>' +
           '</div>' +
         '</div>' +
+
+        '<div class="card">' +
+          '<div class="card-header"><div><h2 class="card-title">Keamanan Login</h2>' +
+          '<p class="card-subtitle">Pembatas percobaan login untuk menahan brute force</p></div></div>' +
+          '<div class="card-body">' +
+            '<div class="form-grid">' +
+              '<div class="field checkbox full"><input type="checkbox" id="login_rate_limit_enabled"' +
+                (toBool(s.login_rate_limit_enabled) ? ' checked' : '') +
+                '><label for="login_rate_limit_enabled">Aktifkan Pembatas Login</label></div>' +
+              field('Percobaan Gratis', 'login_free_attempts', s.login_free_attempts, 'number', '', '1', '100',
+                'Jumlah salah ketik yang masih bebas sebelum permintaan ditunda.') +
+              field('Ambang Kunci Akun', 'login_lock_threshold', s.login_lock_threshold, 'number', '', '1', '1000',
+                'Total gagal untuk satu username sebelum akun dikunci sementara.') +
+              field('Durasi Kunci (detik)', 'login_lock_seconds', s.login_lock_seconds, 'number', '', '30', '86400',
+                'Lama akun terkunci. 900 detik = 15 menit.') +
+            '</div>' +
+            '<div class="callout mt"><strong>Cara kerjanya</strong>' +
+            'Percobaan yang gagal dihitung per pasangan alamat IP dan username. Setelah melewati Percobaan Gratis, ' +
+            'permintaan berikutnya harus menunggu dan jeda bertambah setiap kali gagal. Bila satu username gagal ' +
+            'sebanyak Ambang Kunci Akun (bisa dari IP berbeda), akunnya dikunci selama Durasi Kunci. ' +
+            'Riwayat hanya bertambah pada login gagal, jadi login berhasil langsung membersihkan hitungan.</div>' +
+          '</div>' +
+        '</div>' +
       '</div>';
 
     bindSave();
@@ -201,7 +337,7 @@
     btn.onclick = function () {
       if (!App.can('settings:write')) { App.toast('Tidak punya hak akses.', 'error'); return; }
       var body = document.getElementById('setBody');
-      var payload = {
+      var payload = compact({
         app_name: getVal(body, '#app_name'),
         company_name: getVal(body, '#company_name'),
         timezone: getVal(body, '#timezone'),
@@ -213,11 +349,15 @@
         max_daily_work_minutes: numVal(body, '#max_daily_work_minutes', 600),
         backfill_days: numVal(body, '#backfill_days', 30),
         use_global_when_no_shift: chkVal(body, '#use_global_when_no_shift'),
-        global_check_in: getVal(body, '#global_check_in') || '08:00',
-        global_check_out: getVal(body, '#global_check_out') || '17:00',
+        global_work_days: syncWorkDays(),
+        global_check_in: orDefault(getVal(body, '#global_check_in'), '08:00'),
+        global_check_out: orDefault(getVal(body, '#global_check_out'), '17:00'),
         global_late_tolerance: numVal(body, '#global_late_tolerance', 10),
-        global_break_start: getVal(body, '#global_break_start') || '',
-        global_break_end: getVal(body, '#global_break_end') || '',
+        global_break_start: orDefault(getVal(body, '#global_break_start'), ''),
+        global_break_end: orDefault(getVal(body, '#global_break_end'), ''),
+        holiday_sync_enabled: chkVal(body, '#holiday_sync_enabled'),
+        holiday_sync_interval_days: numVal(body, '#holiday_sync_interval_days', 30),
+        holiday_sync_years_ahead: numVal(body, '#holiday_sync_years_ahead', 1),
         sync_interval_minutes: numVal(body, '#sync_interval_minutes', 5),
         device_timeout_ms: numVal(body, '#device_timeout_ms', 20000),
         device_clear_log_after_sync: chkVal(body, '#device_clear_log_after_sync'),
@@ -236,29 +376,57 @@
         whatsapp_target: getVal(body, '#whatsapp_target'),
         whatsapp_field_target: getVal(body, '#whatsapp_field_target'),
         whatsapp_field_message: getVal(body, '#whatsapp_field_message'),
-      };
+
+        login_rate_limit_enabled: chkVal(body, '#login_rate_limit_enabled'),
+        login_free_attempts: numVal(body, '#login_free_attempts', 5),
+        login_lock_threshold: numVal(body, '#login_lock_threshold', 10),
+        login_lock_seconds: numVal(body, '#login_lock_seconds', 900),
+      });
 
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span> Menyimpan...';
       api.put('/settings', payload)
-        .then(function () { App.toast('Pengaturan berhasil disimpan.', 'success'); })
+        .then(function (res) {
+          // Server bisa memberi tahu bahwa ada pengaturan yang baru berlaku
+          // setelah restart, jadi pesan baliknya dipakai apa adanya.
+          App.toast(res.message || 'Pengaturan berhasil disimpan.', 'success');
+        })
         .catch(function (err) { App.toast(err.message, 'error'); })
         .then(function () { btn.disabled = false; btn.textContent = 'Simpan Perubahan'; });
     };
   }
 
+  /* Field yang tidak ada di tab aktif dikembalikan `undefined`, lalu dibuang
+     dari payload. Tanpa ini, checkbox tab lain terkirim `false` dan diam-diam
+     mematikan pengaturan yang tidak sedang ditampilkan. */
   function getVal(root, sel) {
     var el = root.querySelector(sel);
-    return el ? el.value : '';
+    return el ? el.value : undefined;
   }
   function numVal(root, sel, def) {
     var v = getVal(root, sel);
-    if (!v) return def;
+    if (v === undefined) return undefined;
+    if (v === '') return def;
     var n = Number(v);
     return isFinite(n) ? n : def;
   }
   function chkVal(root, sel) {
     var el = root.querySelector(sel);
-    return el ? el.checked : false;
+    return el ? el.checked : undefined;
+  }
+
+  /** Nilai cadangan hanya dipakai bila fieldnya benar-benar ada di tab ini. */
+  function orDefault(value, fallback) {
+    if (value === undefined) return undefined;
+    return value === '' ? fallback : value;
+  }
+
+  /** Buang key yang bernilai undefined supaya tidak menimpa nilai tersimpan. */
+  function compact(obj) {
+    var out = {};
+    Object.keys(obj).forEach(function (k) {
+      if (obj[k] !== undefined) out[k] = obj[k];
+    });
+    return out;
   }
 })();

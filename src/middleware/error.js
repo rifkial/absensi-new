@@ -25,6 +25,12 @@ function errorHandler(err, req, res, next) {
     },
   };
 
+  // Rate limit / lockout: beri tahu klien berapa lama harus menunggu.
+  if (status === 429 && isApp && err.retryAfter) {
+    res.setHeader('Retry-After', String(err.retryAfter));
+    body.error.retry_after = err.retryAfter;
+  }
+
   if (isApp && err.details) body.error.details = err.details;
   if (!config.isProduction && status >= 500) body.error.stack = err.stack;
 

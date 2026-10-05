@@ -20,6 +20,9 @@ const PERMISSIONS = {
   'employees:delete': ['admin'],
   'shifts:read': ['admin', 'hr', 'operator', 'viewer'],
   'shifts:write': ['admin', 'hr'],
+  'holidays:read': ['admin', 'hr', 'operator', 'viewer'],
+  // Menambah / mengubah hari libur memengaruhi rekap seluruh karyawan.
+  'holidays:write': ['admin', 'hr'],
   'devices:read': ['admin', 'hr', 'operator'],
   'devices:write': ['admin'],
   'devices:sync': ['admin', 'hr', 'operator'],
@@ -31,6 +34,9 @@ const PERMISSIONS = {
   'settings:read': ['admin', 'hr'],
   'settings:write': ['admin'],
   'notify:send': ['admin', 'hr'],
+  // Jejak audit memuat perubahan internal (termasuk siapa yang mengganti
+  // password), jadi tidak dibuka untuk role read-only.
+  'audit:read': ['admin', 'hr'],
   // Portal karyawan: hanya data miliknya sendiri.
   'self:read': ['admin', 'hr', 'employee'],
   'self:write': ['admin', 'hr', 'employee'],

@@ -1,6 +1,7 @@
 'use strict';
 
 const db = require('../db/pool');
+const leaveQuota = require('./leaveQuota');
 const { badRequest, notFound, conflict, str, boolParam, pagination, pageMeta } = require('../utils/errors');
 const { toDate } = require('../utils/date');
 
@@ -8,6 +9,7 @@ const SELECT_COLUMNS = `
   e.id, e.employee_code, e.device_user_id, e.name, e.gender,
   e.department_id, e.position_id, e.shift_id, e.phone, e.email, e.address,
   e.photo_path, e.hire_date, e.status, e.fingerprint_status, e.notes,
+  e.annual_leave_quota, e.annual_leave_used, e.annual_leave_reset_at,
   e.created_at, e.updated_at,
   dep.name AS department_name,
   pos.name AS position_name,
@@ -155,6 +157,13 @@ function normalize(payload, { partial = false } = {}) {
   if (payload.photo_path !== undefined) data.photo_path = str(payload.photo_path, { maxLength: 255 }) || null;
   if (payload.notes !== undefined) data.notes = str(payload.notes, { maxLength: 2000 }) || null;
 
+  // Jatah cuti tahunan. `annual_leave_used` sengaja tidak bisa diisi dari
+  // form: angka terpakai hanya boleh berubah lewat persetujuan pengajuan atau
+  // reset admin/HR (lihat services/leaveQuota.js).
+  if (payload.annual_leave_quota !== undefined) {
+    data.annual_leave_quota = normalizeQuota(payload.annual_leave_quota);
+  }
+
   if (payload.hire_date !== undefined) {
     data.hire_date = payload.hire_date ? toDate(payload.hire_date) : null;
     if (payload.hire_date && !data.hire_date) throw badRequest('hire_date tidak valid (format YYYY-MM-DD).');
@@ -177,6 +186,23 @@ function normalize(payload, { partial = false } = {}) {
   }
 
   return data;
+}
+
+/**
+ * Validasi jatah cuti tahunan dari form.
+ * Kosong berarti 0 (karyawan tanpa jatah cuti tahunan).
+ */
+function normalizeQuota(value) {
+  if (value === '' || value === null || value === undefined) return 0;
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw badRequest('annual_leave_quota harus bilangan bulat 0-365.');
+  }
+  if (parsed < 0 || parsed > leaveQuota.MAX_QUOTA_DAYS) {
+    throw badRequest(`annual_leave_quota harus antara 0 dan ${leaveQuota.MAX_QUOTA_DAYS} hari.`);
+  }
+  return parsed;
 }
 
 /** Pastikan kode karyawan & PIN unik sebelum insert. */
@@ -216,11 +242,16 @@ async function create(payload) {
   return getById(result.insertId);
 }
 
-async function update(id, payload) {
+async function update(id, payload, { actorId = null } = {}) {
   await getOrFail(id);
   const data = normalize(payload, { partial: true });
 
-  if (Object.keys(data).length === 0) {
+  // Jatah cuti ditangani terpisah supaya "terpakai" ikut dijepit ke jatah baru
+  // dan perubahannya tercatat di leave_quota_logs.
+  const quota = data.annual_leave_quota;
+  delete data.annual_leave_quota;
+
+  if (Object.keys(data).length === 0 && quota === undefined) {
     throw badRequest('Tidak ada field yang diubah.');
   }
 
@@ -238,10 +269,19 @@ async function update(id, payload) {
   }
 
   const columns = Object.keys(data);
-  await db.execute(
-    `UPDATE employees SET ${columns.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`,
-    [...columns.map((c) => data[c]), id]
-  );
+  if (columns.length > 0) {
+    await db.execute(
+      `UPDATE employees SET ${columns.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`,
+      [...columns.map((c) => data[c]), id]
+    );
+  }
+
+  if (quota !== undefined) {
+    await leaveQuota.setQuota(id, quota, {
+      actorId,
+      reason: 'Perubahan jatah cuti tahunan dari form karyawan',
+    });
+  }
 
   return getById(id);
 }
@@ -286,9 +326,9 @@ async function stats() {
  * Urutannya mengikuti parseCsv di adapter CSV.
  */
 const EMPLOYEE_CSV_TEMPLATE = [
-  'employee_code,device_user_id,name,gender,department_id,position_id,shift_id,phone,email,hire_date,status',
-  '001,1,Ahmad Fauzi,L,1,1,1,081234567890,ahmad@contoh.com,2024-01-15,aktif',
-  '002,2,Siti Aminah,P,1,2,2,081234567891,siti@contoh.com,2024-02-01,aktif',
+  'employee_code,device_user_id,name,gender,department_id,position_id,shift_id,phone,email,hire_date,status,annual_leave_quota',
+  '001,1,Ahmad Fauzi,L,1,1,1,081234567890,ahmad@contoh.com,2024-01-15,aktif,12',
+  '002,2,Siti Aminah,P,1,2,2,081234567891,siti@contoh.com,2024-02-01,aktif,12',
 ].join('\n');
 
 /** Impor karyawan dari array baris CSV (dipakai oleh endpoint /api/employees/import). */
@@ -312,6 +352,13 @@ async function importFromRows(rows) {
     email: columnIndex(['email', 'email_address', 'surel']),
     hire_date: columnIndex(['hire_date', 'tanggal_masuk', 'tgl_masuk']),
     status: columnIndex(['status']),
+    annual_leave_quota: columnIndex([
+      'annual_leave_quota',
+      'jatah_cuti',
+      'jatah cuti',
+      'cuti_tahunan',
+      'kuota_cuti',
+    ]),
   };
 
   if (idx.name === -1) {
@@ -340,6 +387,7 @@ async function importFromRows(rows) {
       email: get('email') || undefined,
       hire_date: get('hire_date') || undefined,
       status: get('status') || undefined,
+      annual_leave_quota: get('annual_leave_quota') || undefined,
     };
     for (const key of ['department_id', 'position_id', 'shift_id']) {
       const value = get(key);
@@ -349,7 +397,7 @@ async function importFromRows(rows) {
     try {
       const existing = await db.queryOne('SELECT id FROM employees WHERE employee_code = ?', [payload.employee_code]);
       if (existing) {
-        await update(existing.id, payload);
+        await update(existing.id, payload, { actorId: null });
         updated += 1;
       } else {
         await create(payload);
@@ -374,5 +422,6 @@ module.exports = {
   stats,
   importFromRows,
   normalize,
+  normalizeQuota,
   EMPLOYEE_CSV_TEMPLATE,
 };

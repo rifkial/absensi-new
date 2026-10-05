@@ -18,6 +18,16 @@ const forbidden = (message = 'Anda tidak punya izin untuk aksi ini.') => new App
 const notFound = (message = 'Data tidak ditemukan.') => new AppError(message, 404);
 const conflict = (message, details) => new AppError(message, 409, details);
 
+/**
+ * Terlalu banyak permintaan (rate limit / lockout).
+ * `retryAfter` dipakai handler error untuk mengirim header Retry-After.
+ */
+const tooManyRequests = (message, retryAfter = null) => {
+  const err = new AppError(message, 429);
+  err.retryAfter = retryAfter;
+  return err;
+};
+
 /** Bungkus handler async supaya error-nya sampai ke error middleware. */
 function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -93,6 +103,7 @@ module.exports = {
   forbidden,
   notFound,
   conflict,
+  tooManyRequests,
   asyncHandler,
   clamp,
   intParam,

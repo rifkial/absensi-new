@@ -14,6 +14,7 @@ dayjs.extend(isoWeek);
 dayjs.extend(customParseFormat);
 
 const config = require('../config');
+const { AppError } = require('./errors');
 
 const DATE = 'YYYY-MM-DD';
 const DATETIME = 'YYYY-MM-DD HH:mm:ss';
@@ -220,7 +221,7 @@ function isoDayOfWeek(value) {
   return d.isValid() ? d.isoWeekday() : 0;
 }
 
-/** Deret hari kerja (1..7) dari string "1,2,3,4,5". */
+/** Deret hari kerja (1..7) dari string "1,2,3,4,5". Nilai di luar rentang dibuang. */
 function parseWorkDays(value) {
   if (Array.isArray(value)) return value.map(Number).filter((n) => n >= 1 && n <= 7);
   if (typeof value !== 'string' || value.trim() === '') return [];
@@ -228,6 +229,61 @@ function parseWorkDays(value) {
     .split(/[,\s;]+/)
     .map((part) => Number(part.trim()))
     .filter((n) => Number.isInteger(n) && n >= 1 && n <= 7);
+}
+
+/** Nama hari dalam format isoWeekday: 1 = Senin ... 7 = Minggu. */
+const ISO_DAY_NAMES = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+
+/**
+ * Parse work_days dengan validasi ketat.
+ *
+ * Berbeda dengan parseWorkDays (yang diam-diam membuang nilai tak valid),
+ * fungsi ini melempar error bila ada angka di luar 1-7. Ini penting karena
+ * UI versi lama mengirim indeks 0-6 sehingga hari Minggu terkirim sebagai "0"
+ * dan hilang begitu saja tanpa ada pesan error.
+ *
+ * @param {string|number[]} value
+ * @param {{ label?: string }} [options]
+ * @returns {number[]} daftar hari unik, terurut
+ */
+function parseWorkDaysStrict(value, { label = 'work_days' } = {}) {
+  const raw = Array.isArray(value) ? value.map((v) => String(v).trim()) : String(value ?? '').split(/[,\s;]+/);
+  const parts = raw.map((part) => part.trim()).filter((part) => part !== '');
+
+  if (parts.length === 0) {
+    throw new AppError(`${label} wajib diisi. Pilih minimal satu hari kerja.`, 400);
+  }
+
+  const days = [];
+  for (const part of parts) {
+    if (!/^-?\d+$/.test(part)) {
+      throw new AppError(
+        `${label} hanya boleh berisi angka 1-7 (1=Senin ... 7=Minggu). Nilai "${part}" tidak valid.`,
+        400
+      );
+    }
+    const day = Number(part);
+    if (day < 1 || day > 7) {
+      throw new AppError(
+        `${label} hanya boleh berisi angka 1-7 (1=Senin ... 7=Minggu). ` +
+          `Nilai "${part}" di luar rentang.`
+      );
+    }
+    days.push(day);
+  }
+
+  return [...new Set(days)].sort((a, b) => a - b);
+}
+
+/** Ringkas daftar hari (1..7) menjadi label "Senin, Rabu, Jumat". */
+function workDaysLabel(value, { short = false } = {}) {
+  const days = parseWorkDays(value);
+  if (days.length === 0) return '';
+  const names = days.map((day) => {
+    const name = ISO_DAY_NAMES[day - 1] || '?';
+    return short ? name.slice(0, 3) : name;
+  });
+  return names.join(', ');
 }
 
 function isWorkDay(workDays, date) {
@@ -275,6 +331,9 @@ module.exports = {
   today,
   parse,
   parseWorkDays,
+  parseWorkDaysStrict,
+  workDaysLabel,
+  ISO_DAY_NAMES,
   isWorkDay,
   isoDayOfWeek,
   formatDate,

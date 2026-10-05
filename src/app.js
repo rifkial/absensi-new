@@ -9,10 +9,12 @@ const { errorHandler, notFoundHandler, bodyParserErrorHandler } = require('./mid
 const authRoutes = require('./routes/auth');
 const employeeRoutes = require('./routes/employees');
 const shiftRoutes = require('./routes/shifts');
+const holidayRoutes = require('./routes/holidays');
 const deviceRoutes = require('./routes/devices');
 const attendanceRoutes = require('./routes/attendance');
 const reportRoutes = require('./routes/reports');
 const settingsRoutes = require('./routes/settings');
+const auditRoutes = require('./routes/audit');
 const meRoutes = require('./routes/me');
 
 /**
@@ -58,11 +60,13 @@ function createApp() {
   app.use('/api/auth', authRoutes);
   app.use('/api/employees', employeeRoutes);
   app.use('/api/shifts', shiftRoutes);
+  app.use('/api/holidays', holidayRoutes);
   app.use('/api/devices', deviceRoutes);
   app.use('/api/attendance', attendanceRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/settings', settingsRoutes);
-app.use('/api/me', meRoutes);
+  app.use('/api/audit', auditRoutes);
+  app.use('/api/me', meRoutes);
 
   // Frontend
   const publicDir = path.isAbsolute(config.server.publicDir)

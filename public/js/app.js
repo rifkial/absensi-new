@@ -14,9 +14,11 @@
   var PAGES = {
     dashboard: { title: 'Dashboard', icon: '&#9632;', module: 'dashboard' },
     attendance: { title: 'Absensi', icon: '&#128197;', module: 'attendance' },
+    pengajuan: { title: 'Pengajuan', icon: '&#128203;', module: 'pengajuan' },
     devices: { title: 'Perangkat', icon: '&#128421;', module: 'devices' },
     employees: { title: 'Karyawan', icon: '&#128101;', module: 'employees' },
     shifts: { title: 'Shift & Jadwal', icon: '&#9200;', module: 'shifts' },
+    holidays: { title: 'Hari Libur', icon: '&#127796;', module: 'holidays', perm: 'holidays:read' },
     reports: { title: 'Laporan', icon: '&#128202;', module: 'reports' },
     users: { title: 'Pengguna', icon: '&#128100;', module: 'users', perm: 'users:manage' },
     settings: { title: 'Pengaturan', icon: '&#9881;', module: 'settings', perm: 'settings:read' },
@@ -38,6 +40,7 @@
       items: [
         { route: 'dashboard', label: 'Dashboard' },
         { route: 'attendance', label: 'Absensi' },
+        { route: 'pengajuan', label: 'Pengajuan' },
         { route: 'reports', label: 'Laporan' },
       ],
     },
@@ -46,6 +49,7 @@
       items: [
         { route: 'employees', label: 'Karyawan' },
         { route: 'shifts', label: 'Shift & Jadwal' },
+        { route: 'holidays', label: 'Hari Libur', perm: 'holidays:read' },
         { route: 'devices', label: 'Mesin Fingerprint' },
       ],
     },
@@ -91,7 +95,6 @@
             '</div>' +
             '<button type="submit" class="btn primary" id="loginBtn">Masuk</button>' +
           '</form>' +
-          '<div class="login-hint">Default: <strong>admin</strong> / <strong>admin123</strong><br>Ganti password setelah masuk pertama kali.</div>' +
         '</div>' +
       '</div>' +
       '<div class="toast-container" id="toastContainer"></div>';
@@ -217,15 +220,20 @@
             '</div>' +
             '<div class="topbar-right">' +
               '<span class="small muted nowrap" id="clockBox"></span>' +
-              '<div class="user-chip">' +
-                '<div class="avatar">' + esc(App.initials(user.full_name)) + '</div>' +
-                '<div>' +
-                  '<div class="small" style="font-weight:600">' + esc(user.full_name) + '</div>' +
-                  '<div class="small faint">' + esc(roleLabels[user.role] || user.role) + '</div>' +
+              '<div class="user-menu" id="userMenu">' +
+                '<button type="button" class="user-chip" id="btnUserMenu" aria-haspopup="menu" aria-expanded="false">' +
+                  '<div class="avatar">' + esc(App.initials(user.full_name)) + '</div>' +
+                  '<div class="user-chip-info">' +
+                    '<div class="small" style="font-weight:600">' + esc(user.full_name) + '</div>' +
+                    '<div class="small faint">' + esc(roleLabels[user.role] || user.role) + '</div>' +
+                  '</div>' +
+                  '<span class="user-caret" aria-hidden="true">&#9662;</span>' +
+                '</button>' +
+                '<div class="user-menu-list" id="userMenuList" role="menu" hidden>' +
+                  '<button type="button" class="user-menu-item" role="menuitem" data-act="password">Ganti Password</button>' +
+                  '<button type="button" class="user-menu-item danger" role="menuitem" data-act="logout">Keluar</button>' +
                 '</div>' +
               '</div>' +
-              '<button class="btn sm" id="btnChangePassword" title="Ganti password">Ganti Password</button>' +
-              '<button class="btn sm" id="btnLogout">Keluar</button>' +
             '</div>' +
           '</header>' +
           '<main class="content" id="pageContent"></main>' +
@@ -233,26 +241,61 @@
       '</div>' +
       '<div class="toast-container" id="toastContainer"></div>';
 
-    document.getElementById('btnLogout').addEventListener('click', function () {
-      App.confirm({
-        title: 'Keluar dari aplikasi',
-        heading: 'Akhiri sesi?',
-        message: 'Anda akan diminta masuk kembali untuk membuka aplikasi.',
-        confirmLabel: 'Ya, Keluar',
-        onConfirm: function () {
-          api.clearSession();
-          App.state.user = null;
-          App.state.permissions = null;
-          stopClock();
-          window.location.hash = '';
-          renderLogin();
-        },
-      });
-    });
-
-    document.getElementById('btnChangePassword').addEventListener('click', openChangePassword);
+    setupUserMenu();
 
     startClock();
+  }
+
+  /** Dropdown profil: ganti password + keluar, digantungkan di tombol profil. */
+  function setupUserMenu() {
+    var wrap = document.getElementById('userMenu');
+    var trigger = document.getElementById('btnUserMenu');
+    var list = document.getElementById('userMenuList');
+    if (!wrap || !trigger || !list) return;
+
+    function setOpen(open) {
+      wrap.classList.toggle('open', open);
+      list.hidden = !open;
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    trigger.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setOpen(list.hidden);
+    });
+
+    list.addEventListener('click', function (ev) {
+      var item = ev.target.closest('[data-act]');
+      if (!item) return;
+      setOpen(false);
+      if (item.getAttribute('data-act') === 'password') openChangePassword();
+      else logout();
+    });
+
+    document.addEventListener('click', function (ev) {
+      if (!wrap.contains(ev.target)) setOpen(false);
+    });
+
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') setOpen(false);
+    });
+  }
+
+  function logout() {
+    App.confirm({
+      title: 'Keluar dari aplikasi',
+      heading: 'Akhiri sesi?',
+      message: 'Anda akan diminta masuk kembali untuk membuka aplikasi.',
+      confirmLabel: 'Ya, Keluar',
+      onConfirm: function () {
+        api.clearSession();
+        App.state.user = null;
+        App.state.permissions = null;
+        stopClock();
+        window.location.hash = '';
+        renderLogin();
+      },
+    });
   }
 
   var clockTimer = null;
