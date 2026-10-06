@@ -13,6 +13,7 @@ const {
   timeToMinutes,
   minutesToTime,
   isoDayOfWeek,
+  SUNDAY_ISO,
   addDays,
   formatDateTime,
 } = require('../utils/date');
@@ -340,6 +341,22 @@ function computeDailyBase({
       result.status = STATUS.HADIR;
       result.note = `Scan pada hari libur: ${holiday.name}`;
       applyScans(result, logs, null);
+    }
+    return result;
+  }
+
+  // Hari Minggu selalu libur, apa pun shift karyawannya.
+  // Pengecekan ini harus mendahului cabang "tanpa shift" di bawah, karena
+  // karyawan tanpa shift pun tidak boleh dihitung alpa karena tidak scan hari
+  // Minggu. Aturan yang sama ditegakkan lagi di isWorkDay untuk jalur lain.
+  if (isoDayOfWeek(workDate) === SUNDAY_ISO) {
+    result.status = STATUS.HARI_LIBUR;
+    // Kalau tetap ada scan di hari Minggu, tetap dianggap hadir (sudah kerja),
+    // tapi tanpa penalti keterlambatan.
+    if (logs.length > 0) {
+      result.status = STATUS.HADIR;
+      result.note = 'Scan pada hari Minggu.';
+      applyScans(result, logs, shift);
     }
     return result;
   }

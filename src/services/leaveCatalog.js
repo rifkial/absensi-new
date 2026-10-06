@@ -25,7 +25,6 @@ const CATEGORIES = [
     label: 'Cuti',
     subtypes: [
       { key: 'cuti_tahunan', label: 'Cuti Tahunan', leave_type: 'cuti', status: 'cuti' },
-      { key: 'cuti_sakit', label: 'Cuti Sakit', leave_type: 'cuti', status: 'sakit' },
       { key: 'cuti_melahirkan', label: 'Cuti Melahirkan', leave_type: 'cuti', status: 'cuti' },
       { key: 'cuti_menikah', label: 'Cuti Menikah', leave_type: 'cuti', status: 'cuti' },
       { key: 'cuti_haji', label: 'Cuti Haji / Umrah', leave_type: 'cuti', status: 'cuti' },
@@ -45,7 +44,8 @@ const CATEGORIES = [
       { key: 'izin_kebutuhan_pribadi', label: 'Izin Keperluan Pribadi', leave_type: 'izin', status: 'izin' },
       { key: 'izin_keluarga', label: 'Izin Mengurus Keluarga', leave_type: 'izin', status: 'izin' },
       { key: 'izin_administrasi', label: 'Izin Mengurus Administrasi / Dokumen', leave_type: 'izin', status: 'izin' },
-      { key: 'izin_sakit', label: 'Izin Sakit', leave_type: 'sakit', status: 'sakit' },
+      // Tidak ada "Izin Sakit" / "Cuti Sakit": kondisi sakit diinput sebagai
+      // izin biasa (Izin Tidak Masuk), sehingga tercatat sebagai izin.
       { key: 'izin_meninggal', label: 'Izin Kematian Keluarga', leave_type: 'izin_meninggal', status: 'izin' },
       { key: 'izin_lainnya', label: 'Izin Lainnya', leave_type: 'izin', status: 'izin' },
     ],
@@ -69,6 +69,9 @@ const CATEGORIES = [
         status: 'dinas_luar',
         single_day: false,
         needs_place: true,
+        // Pegawai boleh mencentang "memakai kendaraan operasional"; kalau
+        // dicentang, pengajuan bisa dicetak jadi pengantar mobil keluar.
+        needs_vehicle: true,
       },
     ],
   },
@@ -77,10 +80,18 @@ const CATEGORIES = [
 /** Sub-jenis yang wajib diisi tujuan/lokasi. */
 const PLACE_SUBTYPES = ['dinas_dalam_kota', 'dinas_luar_kota'];
 
-/** Semua leave_type yang boleh tersimpan (lama + baru). */
+/** Sub-jenis yang boleh mencentang "memakai kendaraan operasional". */
+const VEHICLE_SUBTYPES = ['dinas_luar_kota'];
+
+/**
+ * Semua leave_type yang boleh tersimpan (lama + baru).
+ *
+ * 'sakit' sengaja TIDAK ada di sini: kondisi sakit diinput sebagai izin biasa,
+ * jadi tidak ada jalur yang bisa membuat status 'sakit' lagi. Nilai enum di
+ * database tidak diubah supaya data lama tetap valid dibaca.
+ */
 const LEAVE_TYPES = [
   'izin',
-  'sakit',
   'cuti',
   'izin_meninggal',
   'dinas_luar',
@@ -98,10 +109,16 @@ const SUBTYPES = (() => {
   return map;
 })();
 
-/** Peta leave_type -> status rekap harian (fallback untuk data lama). */
+/**
+ * Peta leave_type -> status rekap harian (fallback untuk data lama).
+ *
+ * 'sakit' dipetakan ke 'izin': pengajuan sakit yang sudah tersimpan sebelum
+ * sub-jenis sakit dihapus akan tetap muncul sebagai izin, bukan status
+ * 'sakit' yang tak lagi punya makna di katalog.
+ */
 const STATUS_BY_LEAVE_TYPE = {
   izin: 'izin',
-  sakit: 'sakit',
+  sakit: 'izin',
   cuti: 'cuti',
   izin_meninggal: 'izin',
   dinas_luar: 'dinas_luar',
@@ -127,12 +144,30 @@ function findSubtype(key) {
 }
 
 /**
+ * Status untuk sub-jenis yang SUDAH DIHAPUS dari katalog.
+ *
+ * cuti_sakit & izin_sakit dulu menghasilkan status 'sakit'. Sekarang keduanya
+ * dihapus karena kondisi sakit diinput sebagai izin biasa, jadi pengajuan lama
+ * yang masih memakai sub-jenis itu harus ikut jadi 'izin' — kalau tidak, status
+ * 'sakit' akan muncul lagi saat rekap harian dihitung ulang.
+ */
+const LEGACY_SUBTYPE_STATUS = {
+  cuti_sakit: 'izin',
+  izin_sakit: 'izin',
+};
+
+/**
  * Status rekap harian untuk sebuah pengajuan.
  * Sub-jenis (kalau ada) menang, lalu fallback ke leave_type untuk data lama.
  */
 function statusForLeave(leaveType, subtypeKey) {
   const sub = findSubtype(subtypeKey);
   if (sub) return sub.status;
+
+  if (subtypeKey && LEGACY_SUBTYPE_STATUS[subtypeKey]) {
+    return LEGACY_SUBTYPE_STATUS[subtypeKey];
+  }
+
   return STATUS_BY_LEAVE_TYPE[leaveType] || 'izin';
 }
 
@@ -162,6 +197,7 @@ function toPublicOptions() {
       label: sub.label,
       single_day: Boolean(sub.single_day),
       needs_place: Boolean(sub.needs_place),
+      needs_vehicle: Boolean(sub.needs_vehicle),
     })),
   }));
 }
@@ -170,6 +206,7 @@ module.exports = {
   CATEGORIES,
   LEAVE_TYPES,
   PLACE_SUBTYPES,
+  VEHICLE_SUBTYPES,
   STATUS_BY_LEAVE_TYPE,
   CATEGORY_BY_LEAVE_TYPE,
   findCategory,

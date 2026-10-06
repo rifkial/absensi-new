@@ -82,10 +82,12 @@
     return ['1', 'true', 'yes', 'on', 'ya'].indexOf(String(v).toLowerCase()) >= 0;
   }
 
-  var DAY_NAMES = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
+  /* 1..6 = Senin..Sabtu. Minggu (7) sengaja tidak ditampilkan karena hari
+     Minggu tidak pernah boleh dipilih sebagai hari kerja. */
+  var DAY_NAMES = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
 
   /**
-   * Pemilih hari kerja (1..7 = Senin..Minggu, sama seperti shifts.work_days).
+   * Pemilih hari kerja (1..6 = Senin..Sabtu, sama seperti shifts.work_days).
    * Nilai disimpan sebagai input tersembunyi "1,2,3,4,5" agar cocok dengan
    * kolom work_days di tabel shifts.
    */
@@ -93,7 +95,7 @@
     var selected = String(value || '1,2,3,4,5')
       .split(',')
       .map(function (v) { return Number(v.trim()); })
-      .filter(function (v) { return v >= 1 && v <= 7; });
+      .filter(function (v) { return v >= 1 && v <= 6; });
     if (selected.length === 0) selected = [1, 2, 3, 4, 5];
 
     var boxes = DAY_NAMES.map(function (name, i) {
@@ -107,7 +109,8 @@
     return '<div class="field full"><label for="global_work_days">Hari Kerja</label>' +
       '<input type="hidden" id="global_work_days" value="' + esc(selected.join(',')) + '">' +
       '<div class="row" id="wdRow" style="gap:14px;flex-wrap:wrap">' + boxes + '</div>' +
-      '<span class="help">Hari yang tidak dicentang tidak dihitung sebagai hari kerja (tidak menambah persentase kehadiran, tidak menambah alpa).</span>' +
+      '<span class="help">Hari yang tidak dicentang tidak dihitung sebagai hari kerja (tidak menambah persentase kehadiran, tidak menambah alpa). ' +
+      'Hari Minggu selalu libur dan tidak bisa dipilih.</span>' +
       '</div>';
   }
 
@@ -261,6 +264,18 @@
               '<span class="help">Bila aktif, scan karyawan pada mesin fingerprint yang tidak ditunjuk di data karyawan TIDAK dicatat dan tidak dihitung sebagai kehadiran. Hanya berlaku untuk scan dari mesin (sinkronisasi/PUSH); impor CSV dan pencatatan manual tetap disimpan.</span></div>' +
           '</div>' +
         '</div>' +
+        '<div class="card">' +
+          '<div class="card-header"><div><h2 class="card-title">Kendaraan Operasional</h2>' +
+          '<p class="card-subtitle">Dipakai pada surat pengantar mobil keluar (dinas luar kota)</p></div></div>' +
+          '<div class="card-body">' +
+            '<div class="form-grid">' +
+              field('Nomor Kendaraan', 'operational_vehicle', s.operational_vehicle, 'text', 'Contoh: B 1234 XYZ - Avanza') +
+              field('Penandatangan Pengantar', 'vehicle_signatory', s.vehicle_signatory, 'text', 'Contoh: Kepala Bagian') +
+            '</div>' +
+            '<div class="callout">Data di atas dipakai otomatis saat mencetak pengantar mobil keluar ' +
+              'untuk pengajuan dinas luar kota yang memakai kendaraan operasional.</div>' +
+          '</div>' +
+        '</div>' +
       '</div>';
 
     bindSave();
@@ -365,6 +380,8 @@
         device_clear_log_after_sync: chkVal(body, '#device_clear_log_after_sync'),
         push_port: numVal(body, '#push_port', 3001),
         push_auth_token: getVal(body, '#push_auth_token'),
+        operational_vehicle: getVal(body, '#operational_vehicle'),
+        vehicle_signatory: getVal(body, '#vehicle_signatory'),
         enforce_assigned_device: chkVal(body, '#enforce_assigned_device'),
         mail_enabled: chkVal(body, '#mail_enabled'),
         mail_host: getVal(body, '#mail_host'),

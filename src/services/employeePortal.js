@@ -12,8 +12,9 @@ const employeesService = require('./employees');
 const leaveCatalog = require('./leaveCatalog');
 const leaveQuota = require('./leaveQuota');
 const geocode = require('./geocode');
+const reimburseCatalog = require('./reimburseCatalog');
 const { badRequest, notFound, forbidden } = require('../utils/errors');
-const { today, toDate, startOfMonth } = require('../utils/date');
+const { today, toDate, startOfMonth, addDays } = require('../utils/date');
 
 const LEAVE_TYPES = leaveCatalog.LEAVE_TYPES;
 const MAX_SELFIE_BYTES = 5 * 1024 * 1024;
@@ -22,6 +23,14 @@ const EXT_BY_MIME = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/webp': '.webp',
+};
+
+// Bukti reimbursement lebih ketat daripada selfie: hanya foto JPG dan PDF.
+// Kwitansi/nota sering berupa hasil scan, jadi PDF ikut diterima.
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_MIME = {
+  'image/jpeg': '.jpg',
+  'application/pdf': '.pdf',
 };
 
 /** Folder privat hasil selfie; TIDAK berada di dalam public/. */
@@ -184,7 +193,7 @@ async function listLeaves(employeeId, query = {}) {
 
   const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
   const rows = await db.queryAll(
-    `SELECT id, leave_type, subtype, place, start_date, end_date, reason, status,
+    `SELECT id, leave_type, subtype, place, use_vehicle, start_date, end_date, reason, status,
             review_note, reviewed_at, created_at
        FROM leave_requests
       WHERE employee_id = ?
@@ -199,6 +208,9 @@ async function listLeaves(employeeId, query = {}) {
     subtype_label: row.subtype
       ? leaveCatalog.labelForLeave(row.leave_type, row.subtype)
       : attendanceService.STATUS_LABEL[row.leave_type] || row.leave_type,
+    // Hanya dinas luar kota yang boleh; dipakai untuk menampilkan tombol
+    // cetak pengantar mobil keluar.
+    can_request_vehicle: leaveCatalog.VEHICLE_SUBTYPES.includes(row.subtype),
   }));
 }
 
@@ -238,11 +250,25 @@ async function createLeave(employeeId, payload = {}) {
 
   const reason = payload.reason ? String(payload.reason).trim().slice(0, 500) : null;
 
+  // Kendaraan operasional hanya relevan untuk dinas luar kota. Bila dikirim
+  // untuk jenis lain, tolak supaya kolom tidak pernah berisi data yang tidak
+  // ada artinya (dan supaya tidak bisa jadi alasan cetak pengantar palsu).
+  const useVehicle = normalizeUseVehicle(payload.use_vehicle, subtype);
+
   const result = await db.execute(
     `INSERT INTO leave_requests
-       (employee_id, leave_type, subtype, place, start_date, end_date, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [employeeId, subtype.leave_type, subtype.key, place, startDate, endDate, reason]
+       (employee_id, leave_type, subtype, place, use_vehicle, start_date, end_date, reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      employeeId,
+      subtype.leave_type,
+      subtype.key,
+      place,
+      useVehicle,
+      startDate,
+      endDate,
+      reason,
+    ]
   );
 
   const row = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [result.insertId]);
@@ -294,6 +320,24 @@ function resolveSubtype(categoryKey, subtypeKey) {
   );
 }
 
+/**
+ * Normalisasi checkbox "memakai kendaraan operasional".
+ *
+ * Hanya Dinas Luar Kota yang boleh memakai kendaraan. Nilai 1/true dari klien
+ * diterima; selain itu selalu 0 supaya tidak ada pengantar mobil yang bisa
+ * dicetak untuk pengajuan yang tidak berhak memintanya.
+ */
+function normalizeUseVehicle(value, subtype) {
+  if (!subtype || !subtype.needs_vehicle) return 0;
+  if (value === undefined || value === null || value === '') return 0;
+
+  const wanted =
+    value === true || value === 1 ||
+    ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+
+  return wanted ? 1 : 0;
+}
+
 /** Tambahkan label yang siap dipakai UI. */
 function decorateLeave(row) {
   if (!row) return row;
@@ -309,6 +353,7 @@ function decorateLeave(row) {
       : attendanceService.STATUS_LABEL[row.leave_type] || row.leave_type,
     uses_quota: usesQuota,
     quota_days: usesQuota ? days : 0,
+    can_request_vehicle: leaveCatalog.VEHICLE_SUBTYPES.includes(row.subtype),
   };
 }
 
@@ -329,6 +374,219 @@ async function cancelLeave(employeeId, leaveId) {
   );
 
   return db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [row.id]);
+}
+
+// ---------------------------------------------------------------------------
+// Reimbursement: pengajuan reimburse oleh karyawan sendiri
+// ---------------------------------------------------------------------------
+
+/** Folder privat bukti foto; TIDAK berada di dalam public/. */
+const reimburseStorageDir = path.join(config.root, 'storage', 'reimburses');
+
+fs.mkdirSync(reimburseStorageDir, { recursive: true });
+
+/**
+ * Validasi tanggal transaksi. Opsional (tidak wajib), tapi bila diisi tidak
+ * boleh di masa depan dan tidak lebih tua dari MAX_BACKDATE_DAYS, supaya
+ * pengajuan lama tidak bisa menyusup diam-diam.
+ */
+function normalizeExpenseDate(value) {
+  const date = toDate(value);
+  if (!date) return null;
+
+  const today = todayStr();
+  if (date > today) throw badRequest('Tanggal transaksi tidak boleh di masa depan.');
+
+  // Pakai addDays (dayjs) bukan Date+toISOString: toISOString mengubah ke UTC,
+  // sedangkan todayStr() memakai zona waktu aplikasi. Di sekitar tengah malam
+  // WIB perbedaannya sehari, sehingga batas 90 hari jadi bergeser.
+  const earliestStr = addDays(today, -reimburseCatalog.MAX_BACKDATE_DAYS);
+  if (date < earliestStr) {
+    throw badRequest(
+      `Tanggal transaksi tidak boleh lebih dari ${reimburseCatalog.MAX_BACKDATE_DAYS} hari lalu.`
+    );
+  }
+
+  return date;
+}
+
+/**
+ * Buat pengajuan reimbursement baru.
+ *
+ * Amount dan tanggal transaksi tidak pernah dipercaya dari klien: total
+ * dihitung dari rincian, tanggal divalidasi ulang, dan status selalu 'pending'
+ * karena default kolom di database (tidak ada di INSERT) sehingga pengaju
+ * tidak mungkin menyetujui pengajuannya sendiri.
+ */
+async function createReimburse(employeeId, payload = {}, file = null) {
+  await getSelfEmployee(employeeId);
+
+  const { items, total } = reimburseCatalog.normalizeItems(payload);
+  const expenseDate = normalizeExpenseDate(payload.expense_date);
+
+  let attachmentName = null;
+  if (file) {
+    const ext = ATTACHMENT_MIME[file.mimetype];
+    if (!ext) {
+      throw badRequest('Bukti hanya boleh berupa foto JPG/JPEG atau berkas PDF.');
+    }
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      throw badRequest('Ukuran berkas bukti maksimal 5 MB.');
+    }
+    // Nama berkas dibuat server-side; nama asli dari user tidak pernah dipakai
+    // sebagai path supaya tidak ada risiko path traversal.
+    attachmentName = `${employeeId}-${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
+  }
+
+  // Satu pengajuan = satu baris di reimburses supaya reviewers cukup
+  // menyetujui satu keputusan. Rincian disimpan di kolom items_json, sedangkan
+  // description/amount/category tetap dipakai sebagai ringkasan supaya query
+  // lama dan tab reimburse yang sudah ada tidak perlu diubah.
+  const result = await db.execute(
+    `INSERT INTO reimburses
+       (employee_id, category, description, amount, expense_date, attachment, items_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      employeeId,
+      items[0].category,
+      items[0].description.slice(0, 500),
+      total,
+      expenseDate,
+      attachmentName,
+      JSON.stringify(items),
+    ]
+  );
+
+  const id = result.insertId;
+
+  if (attachmentName) {
+    try {
+      await fsp.writeFile(path.join(reimburseStorageDir, attachmentName), file.buffer);
+    } catch (err) {
+      // Berkas gagal ditulis: lepaskan rujukannya supaya tidak ada baris yang
+      // menunjuk berkas yang tidak ada, lalu batalkan pengajuan ini.
+      await db.execute('DELETE FROM reimburses WHERE id = ?', [id]);
+      throw new Error(`Gagal menyimpan bukti foto: ${err.message}`);
+    }
+  }
+
+  const row = await db.queryOne('SELECT * FROM reimburses WHERE id = ?', [id]);
+  return decorateReimburse(row);
+}
+
+function decorateReimburse(row) {
+  if (!row) return row;
+
+  let breakdown = null;
+  if (row.items_json) {
+    try {
+      const parsed = JSON.parse(row.items_json);
+      if (Array.isArray(parsed) && parsed.length > 0) breakdown = parsed;
+    } catch {
+      // JSON rusak tidak boleh menggagalkan seluruh list; pakai ringkasan saja.
+      breakdown = null;
+    }
+  }
+
+  if (!breakdown) {
+    breakdown = [
+      {
+        description: row.description,
+        amount: Number(row.amount || 0),
+        category: row.category || null,
+      },
+    ];
+  }
+
+  return {
+    ...row,
+    amount: Number(row.amount || 0),
+    items: breakdown,
+    status_label:
+      row.status === 'approved'
+        ? 'Disetujui'
+        : row.status === 'rejected'
+          ? 'Ditolak'
+          : 'Menunggu',
+    category_label: reimburseCatalog.labelFor(row.category),
+    // UI butuh tahu apakah membuka bukti lewat <img> atau viewer PDF.
+    attachment_kind: row.attachment
+      ? path.extname(String(row.attachment)).toLowerCase() === '.pdf'
+        ? 'pdf'
+        : 'image'
+      : null,
+  };
+}
+
+async function listReimburses(employeeId, query = {}) {
+  await getSelfEmployee(employeeId);
+
+  const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
+  const rows = await db.queryAll(
+    `SELECT id, employee_id, category, description, amount, expense_date, attachment,
+            status, reviewed_by, reviewed_at, review_note, created_at
+       FROM reimburses
+      WHERE employee_id = ?
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?`,
+    [employeeId, limit]
+  );
+
+  return rows.map((row) => decorateReimburse(row));
+}
+
+/** Batalkan pengajuan sendiri selama masih pending. */
+async function cancelReimburse(employeeId, reimburseId) {
+  const row = await db.queryOne(
+    'SELECT * FROM reimburses WHERE id = ? AND employee_id = ?',
+    [Number(reimburseId), employeeId]
+  );
+  if (!row) throw notFound('Pengajuan reimburse tidak ditemukan.');
+  if (row.status !== 'pending') {
+    throw badRequest('Hanya pengajuan berstatus Menunggu yang bisa dibatalkan.');
+  }
+
+  await db.execute(
+    "UPDATE reimburses SET status = 'rejected', review_note = 'Dibatalkan oleh pengaju' WHERE id = ?",
+    [row.id]
+  );
+
+  return db.queryOne('SELECT * FROM reimburses WHERE id = ?', [row.id]);
+}
+
+/**
+ * Ambil bukti milik sendiri. Path diambil dari DB (bukan dari user), lalu
+ * divalidasi agar tidak keluar dari folder penyimpanan.
+ */
+async function getReimburseFile(employeeId, reimburseId) {
+  const row = await db.queryOne(
+    'SELECT id, attachment FROM reimburses WHERE id = ? AND employee_id = ?',
+    [Number(reimburseId), employeeId]
+  );
+  if (!row || !row.attachment) throw notFound('Bukti tidak ditemukan.');
+
+  const name = path.basename(String(row.attachment));
+  const absolute = path.join(reimburseStorageDir, name);
+  if (!absolute.startsWith(reimburseStorageDir + path.sep)) throw notFound('Bukti tidak ditemukan.');
+  if (!fs.existsSync(absolute)) throw notFound('Bukti tidak ditemukan.');
+
+  return { absolute, mime: attachmentMimeOf(name) };
+}
+
+/** MIME berkas bukti berdasarkan ekstensi yang disimpan server. */
+function attachmentMimeOf(name) {
+  return path.extname(String(name)).toLowerCase() === '.pdf' ? 'application/pdf' : 'image/jpeg';
+}
+
+/** Nama unduhan yang rapi untuk riwayat admin: '<deskripsi>.<ext>'. */
+function attachmentDownloadName(row) {
+  const ext = path.extname(String(row.attachment || '')) || '.jpg';
+  const base = String(row.description || 'bukti')
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+    .toLowerCase();
+  return `${base || 'bukti'}${ext}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,6 +809,18 @@ module.exports = {
   listLeaves,
   createLeave,
   cancelLeave,
+  normalizeUseVehicle,
+  REIMBURSE_OPTIONS: reimburseCatalog.toPublicOptions(),
+  createReimburse,
+  listReimburses,
+  cancelReimburse,
+  getReimburseFile,
+  attachmentMimeOf,
+  attachmentDownloadName,
+  ATTACHMENT_MIME,
+  MAX_ATTACHMENT_BYTES,
+  reimburseStorageDir,
+  normalizeExpenseDate,
   getToday,
   checkIn,
   checkOut,

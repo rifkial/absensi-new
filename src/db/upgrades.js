@@ -1,6 +1,39 @@
 'use strict';
 
 /**
+ * Lengkapi tabel reimburses untuk pengajuan dari portal karyawan.
+ *
+ * Instalasi lama hanya punya description + amount, sehingga tidak ada tempat
+ * menyimpan jenis biaya, tanggal transaksi, rincian per baris, maupun alasan
+ * penolakan. Kolom `items_json` dipakai untuk rincian; description/amount
+ * lama tetap dipakai sebagai ringkasan supaya tab reimburse yang sudah ada
+ * tidak perlu diubah.
+ */
+async function upgradeReimburses(conn) {
+  if (!(await tableExists(conn, 'reimburses'))) return;
+
+  const columns = [
+    ['category', "`category` VARCHAR(50) NULL COMMENT 'Jenis biaya' AFTER `employee_id`"],
+    ['expense_date', '`expense_date` DATE NULL COMMENT \'Tanggal transaksi\' AFTER `amount`'],
+    ['review_note', "`review_note` VARCHAR(500) NULL COMMENT 'Alasan penolakan / catatan pemeriksa' AFTER `reviewed_at`"],
+    ['items_json', "`items_json` TEXT NULL COMMENT 'Rincian biaya JSON' AFTER `attachment`"],
+  ];
+
+  for (const [name, definition] of columns) {
+    if (await columnExists(conn, 'reimburses', name)) continue;
+    await conn.query(`ALTER TABLE \`reimburses\` ADD COLUMN ${definition}`);
+    changes.push(`reimburses.${name}`);
+  }
+
+  if (!(await indexExists(conn, 'reimburses', 'ix_reimburse_expense_date'))) {
+    await conn.query(
+      'ALTER TABLE `reimburses` ADD KEY `ix_reimburse_expense_date` (`expense_date`)'
+    );
+    changes.push('reimburses.ix_reimburse_expense_date');
+  }
+}
+
+/**
  * Upgrade skema untuk database yang SUDAH ADA.
  *
  * db/schema.sql memakai CREATE TABLE IF NOT EXISTS, jadi tidak mengubah tabel
@@ -286,6 +319,23 @@ async function upgradeLeaveQuotaLogs(conn) {
 }
 
 /**
+ * Pengajuan dinas luar kota memakai kendaraan operasional.
+ *
+ * Kolomnya dipakai untuk mencetak pengantar mobil keluar. Default 0 supaya
+ * pengajuan lama (yang jelas tidak memakai kendaraan) tidak ikut berubah.
+ */
+async function upgradeLeaveRequestsVehicle(conn) {
+  if (!(await tableExists(conn, 'leave_requests'))) return;
+  if (await columnExists(conn, 'leave_requests', 'use_vehicle')) return;
+
+  await conn.query(
+    'ALTER TABLE `leave_requests` ADD COLUMN `use_vehicle` TINYINT(1) NOT NULL DEFAULT 0 ' +
+      "COMMENT '1 = dinas luar kota memakai kendaraan operasional' AFTER `place`"
+  );
+  changes.push('leave_requests.use_vehicle');
+}
+
+/**
  * Jumlah scan yang dibuang saat sinkronisasi.
  *
  * Diisi hanya ketika pengaturan enforce_assigned_device aktif, yaitu scan dari
@@ -333,10 +383,12 @@ async function applyUpgrades(conn) {
   await upgradeAppUsers(conn);
   await upgradeEmployees(conn);
   await upgradeLeaveRequests(conn);
+  await upgradeLeaveRequestsVehicle(conn);
   await upgradeLeaveQuotaLogs(conn);
   await upgradeAttendanceDaily(conn);
   await upgradeAttendanceDailyWrongDevice(conn);
   await upgradeSyncLogsFiltered(conn);
+  await upgradeReimburses(conn);
   await upgradeDutyCheckinsGeo(conn);
   await auditShiftWorkDays(conn);
 

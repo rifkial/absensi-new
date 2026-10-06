@@ -221,14 +221,30 @@ function isoDayOfWeek(value) {
   return d.isValid() ? d.isoWeekday() : 0;
 }
 
-/** Deret hari kerja (1..7) dari string "1,2,3,4,5". Nilai di luar rentang dibuang. */
+/**
+ * Nomor hari Minggu dalam isoWeekday (1=Senin ... 7=Minggu).
+ *
+ * Aplikasi ini memperlakukan Minggu sebagai hari NON-kerja secara mutlak:
+ * tidak ada shift, pengaturan global, atau data lama yang bisa membuatnya
+ * menjadi hari kerja. Alasannya, hitungan hari kerja dipakai untuk potong
+ * jatah cuti dan persentase kehadiran; kalau Minggu ikut terhitung, karyawan
+ * dirugikan tanpa diminta.
+ */
+const SUNDAY_ISO = 7;
+
+/**
+ * Deret hari kerja (1..7) dari string "1,2,3,4,5".
+ * Nilai di luar rentang dibuang, dan 7 (Minggu) ikut dibuang karena hari
+ * Minggu tidak pernah dihitung sebagai hari kerja.
+ */
 function parseWorkDays(value) {
-  if (Array.isArray(value)) return value.map(Number).filter((n) => n >= 1 && n <= 7);
-  if (typeof value !== 'string' || value.trim() === '') return [];
-  return value
-    .split(/[,\s;]+/)
-    .map((part) => Number(part.trim()))
-    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 7);
+  const list = Array.isArray(value)
+    ? value.map(Number)
+    : typeof value === 'string' && value.trim() !== ''
+      ? value.split(/[,\s;]+/).map((part) => Number(part.trim()))
+      : [];
+
+  return list.filter((n) => Number.isInteger(n) && n >= 1 && n <= SUNDAY_ISO - 1);
 }
 
 /** Nama hari dalam format isoWeekday: 1 = Senin ... 7 = Minggu. */
@@ -238,9 +254,12 @@ const ISO_DAY_NAMES = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Mi
  * Parse work_days dengan validasi ketat.
  *
  * Berbeda dengan parseWorkDays (yang diam-diam membuang nilai tak valid),
- * fungsi ini melempar error bila ada angka di luar 1-7. Ini penting karena
+ * fungsi ini melempar error bila ada angka di luar 1-6. Ini penting karena
  * UI versi lama mengirim indeks 0-6 sehingga hari Minggu terkirim sebagai "0"
  * dan hilang begitu saja tanpa ada pesan error.
+ *
+ * Angka 7 (Minggu) ditolak secara eksplisit, bukan diam-diam dibuang, supaya
+ * admin yang sengaja mencentang Minggu tahu kalau itu tidak berlaku.
  *
  * @param {string|number[]} value
  * @param {{ label?: string }} [options]
@@ -258,18 +277,28 @@ function parseWorkDaysStrict(value, { label = 'work_days' } = {}) {
   for (const part of parts) {
     if (!/^-?\d+$/.test(part)) {
       throw new AppError(
-        `${label} hanya boleh berisi angka 1-7 (1=Senin ... 7=Minggu). Nilai "${part}" tidak valid.`,
+        `${label} hanya boleh berisi angka 1-6 (1=Senin ... 6=Sabtu). Nilai "${part}" tidak valid.`,
         400
       );
     }
     const day = Number(part);
-    if (day < 1 || day > 7) {
+    if (day === SUNDAY_ISO) {
       throw new AppError(
-        `${label} hanya boleh berisi angka 1-7 (1=Senin ... 7=Minggu). ` +
+        'Hari Minggu tidak bisa dipilih sebagai hari kerja. Pilih hari lain.',
+        400
+      );
+    }
+    if (day < 1 || day > SUNDAY_ISO - 1) {
+      throw new AppError(
+        `${label} hanya boleh berisi angka 1-6 (1=Senin ... 6=Sabtu). ` +
           `Nilai "${part}" di luar rentang.`
       );
     }
     days.push(day);
+  }
+
+  if (days.length === 0) {
+    throw new AppError(`${label} wajib diisi. Pilih minimal satu hari kerja selain Minggu.`, 400);
   }
 
   return [...new Set(days)].sort((a, b) => a - b);
@@ -286,9 +315,23 @@ function workDaysLabel(value, { short = false } = {}) {
   return names.join(', ');
 }
 
+/**
+ * Apakah `date` termasuk hari kerja.
+ *
+ * Ini satu-satunya titik keputusan yang dipakai seluruh aplikasi (rekap harian
+ * dan pemotong jatah cuti), jadi aturan Minggu diletakkan di sini:
+ *   - tanggal Minggu SELALU bukan hari kerja, apa pun isi work_days
+ *   - work_days kosong/Tidak dikenal => semua hari selain Minggu dianggap kerja
+ *
+ * Pengecekan Minggu dilakukan sebelum work_days dibaca supaya shift yang
+ * hanya berisi "7" pun tidak membuat Minggu terbaca sebagai hari kerja.
+ */
 function isWorkDay(workDays, date) {
+  if (isoDayOfWeek(date) === SUNDAY_ISO) return false;
+
   const days = parseWorkDays(workDays);
   if (days.length === 0) return true;
+
   return days.includes(isoDayOfWeek(date));
 }
 
@@ -334,6 +377,7 @@ module.exports = {
   parseWorkDaysStrict,
   workDaysLabel,
   ISO_DAY_NAMES,
+  SUNDAY_ISO,
   isWorkDay,
   isoDayOfWeek,
   formatDate,

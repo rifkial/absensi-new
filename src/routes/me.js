@@ -27,14 +27,28 @@ router.use(
   })
 );
 
-// Selfie diterima di memori lalu ditulis ke folder privat oleh service,
-// sehingga nama berkas tidak pernah berasal dari input pengguna.
+// Selfie dinas luar diterima di memori lalu ditulis ke folder privat oleh
+// service, sehingga nama berkas tidak pernah berasal dari input pengguna.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: portal.MAX_SELFIE_BYTES + 1024, files: 1 },
   fileFilter(req, file, cb) {
     if (!portal.ALLOWED_MIME.includes(file.mimetype)) {
-      cb(badRequest('Format selfie harus JPG, PNG, atau WEBP.'));
+      cb(badRequest('Format foto harus JPG, PNG, atau WEBP.'));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+// Bukti reimburse: hanya foto JPG/JPEG atau PDF. Dipisah dari `upload` karena
+// selfie tidak boleh menerima PDF, sedangkan bukti reimburse tidak perlu WEBP/PNG.
+const attachmentUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: portal.MAX_ATTACHMENT_BYTES + 1024, files: 1 },
+  fileFilter(req, file, cb) {
+    if (!portal.ATTACHMENT_MIME[file.mimetype]) {
+      cb(badRequest('Bukti hanya boleh berupa foto JPG/JPEG atau berkas PDF.'));
       return;
     }
     cb(null, true);
@@ -91,6 +105,61 @@ router.delete(
       ok: true,
       data: await portal.cancelLeave(req.selfEmployeeId, req.params.leaveId),
     });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Reimbursement
+// ---------------------------------------------------------------------------
+
+/** Daftar jenis biaya untuk mengisi form pengajuan. */
+router.get(
+  '/reimburse-options',
+  wrap(async (req, res) => {
+    res.json({ ok: true, data: portal.REIMBURSE_OPTIONS });
+  })
+);
+
+/** Pengajuan reimburse milik sendiri. Bukti foto opsional. */
+router.get(
+  '/reimburses',
+  wrap(async (req, res) => {
+    res.json({ ok: true, data: await portal.listReimburses(req.selfEmployeeId, req.query) });
+  })
+);
+
+router.post(
+  '/reimburses',
+  attachmentUpload.single('attachment'),
+  wrap(async (req, res) => {
+    const row = await portal.createReimburse(req.selfEmployeeId, req.body || {}, req.file || null);
+    res.status(201).json({ ok: true, data: row });
+  })
+);
+
+router.delete(
+  '/reimburses/:reimburseId',
+  wrap(async (req, res) => {
+    res.json({
+      ok: true,
+      data: await portal.cancelReimburse(req.selfEmployeeId, req.params.reimburseId),
+    });
+  })
+);
+
+/** Bukti milik sendiri (JPG/PDF); dilayani streaming dari folder privat. */
+router.get(
+  '/reimburses/:id/attachment',
+  wrap(async (req, res) => {
+    const file = await portal.getReimburseFile(req.selfEmployeeId, req.params.id);
+
+    // PDF opened inline di tab browser; JPEG juga. Header nosniff mencegah
+    // browser menebak-nebak tipe dari isi berkas.
+    res.setHeader('Content-Type', file.mime);
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.sendFile(file.absolute);
   })
 );
 

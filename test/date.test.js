@@ -65,9 +65,13 @@ test('isWorkDay hanya menerima hari yang terdaftar', () => {
   assert.equal(isWorkDay(kerja, '2026-03-01'), false); // Minggu
 });
 
-test('isWorkDay tanpa daftar hari kerja menganggap semua hari kerja', () => {
-  assert.equal(isWorkDay('', '2026-03-07'), true);
-  assert.equal(isWorkDay(null, '2026-03-01'), true);
+test('isWorkDay tanpa daftar hari kerja menganggap semua hari kerja kecuali Minggu', () => {
+  assert.equal(isWorkDay('', '2026-03-07'), true); // Sabtu tetap kerja
+  assert.equal(isWorkDay(null, '2026-03-03'), true); // Rabu tetap kerja
+  // 2026-03-01 = Minggu. formerly dianggap hari kerja, kini tidak: aturan
+  // Minggu bukan hari kerja berlaku mutlak, termasuk saat work_days kosong.
+  assert.equal(isWorkDay('', '2026-03-01'), false);
+  assert.equal(isWorkDay(null, '2026-03-01'), false);
 });
 
 test('timeToMinutes dan minutesToTime bolak-balik', () => {

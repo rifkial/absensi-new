@@ -108,18 +108,25 @@
     });
   }
 
+  /**
+   * Label hari kerja. Angka 7 (Minggu) sengaja dilewati karena hari Minggu
+   * tidak pernah boleh menjadi hari kerja; data lama yang masih memuat 7
+   * karena itu hanya menampilkan hari lainnya.
+   */
   function workDaysLabel(value) {
     var days = String(value || '').split(',').map(function (d) { return Number(d.trim()); });
     var names = [];
     var invalid = [];
     for (var i = 0; i < days.length; i += 1) {
-      if (days[i] >= 1 && days[i] <= 7) names.push(WORK_DAY_NAMES[days[i] - 1].slice(0, 3));
+      if (days[i] >= 1 && days[i] <= 6) names.push(WORK_DAY_NAMES[days[i] - 1].slice(0, 3));
+      else if (days[i] === 7) names.push(WORK_DAY_NAMES[6].slice(0, 3) + '*');
       else invalid.push(days[i]);
     }
+    var label = names.length > 0 ? names.join(', ') : '-';
     if (invalid.length > 0) {
-      return names.join(', ') + ' <span class="badge danger">data tidak valid: ' + invalid.join(',') + '</span>';
+      return label + ' <span class="badge danger">data tidak valid: ' + invalid.join(',') + '</span>';
     }
-    return names.length > 0 ? names.join(', ') : '-';
+    return label;
   }
 
   function paintBulk() {
@@ -156,7 +163,7 @@
 
         '<div class="card">' +
           '<div class="card-header"><div><h2 class="card-title">Jadwal Berulang</h2>' +
-          '<p class="card-subtitle">Buat jadwal periode panjang mengikuti hari kerja shift masing-masing karyawan.</p></div></div>' +
+          '<p class="card-subtitle">Buat jadwal periode panjang untuk semua karyawan.</p></div></div>' +
           '<div class="card-body">' +
             '<div class="form-grid">' +
               '<div class="field"><label>Dari <span class="req">*</span></label><input type="date" id="gsFrom" value="' + esc(App.today()) + '"></div>' +
@@ -165,7 +172,22 @@
                 (meta_.departments || []).map(function (d) { return '<option value="' + d.id + '">' + esc(d.name) + '</option>'; }).join('') +
               '</select></div>' +
             '</div>' +
-            '<div class="callout mt">Karyawan memakai shift default masing-masing. Tanggal yang bukan hari kerja shift akan ditandai sebagai Hari Libur. Maksimal 120 hari.</div>' +
+            '<div class="field"><label>Hari Kerja <span class="req">*</span></label>' +
+              '<input type="hidden" id="gsDays" value="1,2,3,4,5">' +
+              '<div class="row" id="gsDaysRow" style="gap:14px;flex-wrap:wrap">' +
+                ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map(function (name, i) {
+                  var day = i + 1;
+                  return '<div class="field checkbox full" style="grid-column:auto">' +
+                    '<input type="checkbox" class="gsDay" value="' + day + '" id="gsd' + day + '"' +
+                    (day <= 5 ? ' checked' : '') + '><label for="gsd' + day + '">' + esc(name) + '</label></div>';
+                }).join('') +
+              '</div>' +
+              '<span class="help">Jadwal global untuk seluruh karyawan pada rentang ini. ' +
+                'Jam kerja tiap karyawan tetap mengikuti shift masing-masing. ' +
+                'Hari Minggu selalu libur dan tidak bisa dipilih.</span>' +
+            '</div>' +
+            '<div class="callout mt">Tanggal yang tidak dicentang ditandai sebagai Hari Libur untuk semua karyawan. ' +
+              'Maksimal 120 hari.</div>' +
             '<button class="btn primary mt" id="gsRun">Buat Jadwal Berulang</button>' +
           '</div>' +
         '</div>' +
@@ -199,19 +221,27 @@
       });
     });
 
-    document.getElementById('gsRun').addEventListener('click', function () {
+document.getElementById('gsRun').addEventListener('click', function () {
       var btn = this;
       var payload = {
         from: document.getElementById('gsFrom').value,
         to: document.getElementById('gsTo').value,
         department_id: document.getElementById('gsDept').value || null,
+        work_days: syncGsDays(),
       };
       if (!payload.from || !payload.to) { App.toast('Tanggal wajib diisi.', 'error'); return; }
+      if (!payload.work_days) { App.toast('Pilih minimal satu hari kerja.', 'error'); return; }
+
+      var dayNames = WORK_DAY_NAMES;
+      var picked = payload.work_days.split(',').map(function (d) {
+        return dayNames[Number(d) - 1] || d;
+      }).join(', ');
 
       App.confirm({
         title: 'Buat jadwal berulang',
-        heading: 'Buat jadwal ' + App.fmtDate(payload.from) + ' s.d. ' + App.fmtDate(payload.to) + '?',
-        message: 'Jadwal yang sudah ada pada rentang tersebut akan ditimpa mengikuti hari kerja shift masing-masing karyawan.',
+        heading: 'Buat jadwal ' + App.fmtDate(payload.from) + ' s/d ' + App.fmtDate(payload.to) + '?',
+        message: 'Jadwal pada rentang tersebut akan ditimpa. Hari kerja: ' + picked +
+          '. Semua hari lain ditandai Hari Libur untuk setiap karyawan.',
         confirmLabel: 'Buat Jadwal',
         onConfirm: function () {
           btn.disabled = true;
@@ -230,6 +260,23 @@
         },
       });
     });
+  }
+
+  /** Kumpulkan checkbox hari kerja jadwal jadi "1,2,3,4,5". */
+  function syncGsDays() {
+    var hidden = document.getElementById('gsDays');
+    if (!hidden) return '';
+
+    var picked = Array.prototype.slice
+      .call(document.querySelectorAll('.gsDay'))
+      .filter(function (cb) { return cb.checked; })
+      .map(function (cb) { return Number(cb.value); })
+      .sort(function (a, b) { return a - b; });
+
+    if (picked.length === 0) return '';
+
+    hidden.value = picked.join(',');
+    return hidden.value;
   }
 
   // ---------------------------------------------------------------- Form shift
@@ -269,13 +316,16 @@
         '<div class="divider"></div>' +
         '<div class="field"><label>Hari Kerja <span class="req">*</span></label>' +
           '<div class="row" id="sfDays">' +
-            WORK_DAY_NAMES.map(function (name, i) {
+            /* Hanya 1..6 (Senin-Sabtu). Hari Minggu sengaja tidak ada karena
+               Minggu tidak pernah boleh dipilih sebagai hari kerja. */
+            WORK_DAY_NAMES.slice(0, 6).map(function (name, i) {
               var day = i + 1;
               var id = 'day' + day;
               return '<div class="field checkbox"><input type="checkbox" id="' + id + '" value="' + day + '"' +
                 (checkedDays[day] ? ' checked' : '') + '><label for="' + id + '">' + esc(name) + '</label></div>';
             }).join('') +
           '</div>' +
+          '<span class="help">Hari Minggu selalu libur dan tidak bisa dipilih.</span>' +
         '</div>' +
         '<div class="field checkbox">' +
           '<input type="checkbox" id="sfActive"' + (!isEdit || Number(shift.is_active) === 1 ? ' checked' : '') + '>' +

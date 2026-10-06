@@ -206,7 +206,10 @@ test('izin yang disetujui menutupi hari tanpa scan', () => {
   assert.equal(result.status, STATUS.IZIN);
 });
 
-test('cuti sakit memakai status sakit, bukan cuti', () => {
+test('cuti sakit yang sudah tersimpan lama tercatat sebagai izin', () => {
+  // Sub-jenis cuti_sakit dihapus dari katalog: kondisi sakit sekarang diinput
+  // sebagai izin biasa. Pengajuan lama bertipe 'sakit' tetap harus terhitung
+  // sebagai izin supaya tidak berubah statusnya diam-diam.
   const d = workdayPast();
   const result = computeDaily(base({
     workDate: d,
@@ -214,7 +217,7 @@ test('cuti sakit memakai status sakit, bukan cuti', () => {
     leave: { leave_type: 'cuti', subtype: 'cuti_sakit', start_date: d, end_date: d },
   }));
 
-  assert.equal(result.status, STATUS.SAKIT);
+  assert.equal(result.status, STATUS.IZIN);
 });
 
 test('cuti tahunan memakai status cuti', () => {

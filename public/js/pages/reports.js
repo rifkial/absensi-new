@@ -150,7 +150,9 @@
 
   function bind() {
     var fmt = document.getElementById('rpFormat');
-    var preview = document.getElementById('rpPreview');
+    // Id tombol di markup adalah "repPreview" (prefix "rep"), bukan "rpPreview".
+    // Salah ketik di sini membuat listener tidak terpasang sama sekali.
+    var preview = document.getElementById('repPreview');
     var excel = document.getElementById('repExcel');
     var csv = document.getElementById('repCsv');
     var print = document.getElementById('repPrint');
@@ -252,10 +254,21 @@
         { key: 'position_name', label: 'Jabatan' },
         { key: 'total_hari_kerja', label: 'Total Hari Kerja', align: 'right' },
         { key: 'total_hadir', label: 'Total Kehadiran', align: 'right' },
+        { key: 'total_hari_terlambat', label: 'Terlambat (tetap hadir)', align: 'right',
+          render: function (r) {
+            return '<span title="Terlambat tetap dihitung sebagai kehadiran">' +
+              esc(App.formatNumber(r.total_hari_terlambat || 0)) + '</span>';
+          } },
         { key: 'total_izin', label: 'Total Izin', align: 'right' },
+        { key: 'total_sakit', label: 'Total Sakit', align: 'right' },
         { key: 'total_cuti', label: 'Total Cuti', align: 'right' },
         { key: 'total_dinas_luar', label: 'Total Dinas Luar', align: 'right' },
-        { key: 'total_hari_terlambat', label: 'Total Hari Terlambat', align: 'right' },
+        { key: 'total_dinas_dalam', label: 'Total Dinas Dalam', align: 'right' },
+        { key: 'total_alpa', label: 'Total Alpa', align: 'right' },
+        { key: 'total_belum', label: 'Total Belum', align: 'right' },
+        { key: 'total_libur', label: 'Total Libur', align: 'right' },
+        { key: 'persen_hadir', label: '% Kehadiran', align: 'right',
+          render: function (r) { return App.formatNumber(r.persen_hadir || 0) + '%'; } },
         { key: 'total_lembur_jam', label: 'Total Lemburan (jam)', align: 'right' },
       ];
     } else if (format === 'rekap_harian') {
@@ -276,16 +289,26 @@
         { key: 'employee_code', label: 'Kode', mono: true },
         { key: 'employee_name', label: 'Nama' },
         { key: 'department_name', label: 'Unit Kerja' },
-        { key: 'total_days', label: 'Total Hari', align: 'right' },
-        { key: 'total_hadir', label: 'Hadir', align: 'right' },
-        { key: 'total_telat', label: 'Telat', align: 'right' },
+        { key: 'total_hari_kerja', label: 'Total Hari Kerja', align: 'right' },
+        { key: 'total_kehadiran', label: 'Total Kehadiran', align: 'right' },
+        { key: 'total_telat', label: 'Terlambat', align: 'right',
+          render: function (r) {
+            // Terlambat tetap dihitung hadir; hanya ditandai di kolom ini.
+            return '<span title="Terlambat tetap dihitung sebagai kehadiran">' +
+              esc(App.formatNumber(r.total_telat || 0)) + '</span>';
+          } },
+        { key: 'total_hari_terlambat', label: 'Jml Hari Terlambat', align: 'right' },
         { key: 'total_izin', label: 'Izin', align: 'right' },
         { key: 'total_sakit', label: 'Sakit', align: 'right' },
         { key: 'total_cuti', label: 'Cuti', align: 'right' },
         { key: 'total_dinas_luar', label: 'Dinas Luar', align: 'right' },
+        { key: 'total_dinas_dalam', label: 'Dinas Dalam', align: 'right' },
         { key: 'total_alpa', label: 'Alpa', align: 'right' },
+        { key: 'total_belum', label: 'Belum', align: 'right' },
         { key: 'persen_hadir', label: '% Kehadiran', align: 'right', render: function (r) { return App.formatNumber(r.persen_hadir) + '%'; } },
         { key: 'total_late_minutes', label: 'Total Telat', align: 'right', render: function (r) { return App.fmtMinutes(r.total_late_minutes); } },
+        { key: 'rata_late_jam', label: 'Rata-rata Telat (jam)', align: 'right' },
+        { key: 'max_late_minutes', label: 'Telat Terlama (menit)', align: 'right' },
         { key: 'total_kerja_jam', label: 'Total Kerja (jam)', align: 'right' },
         { key: 'total_lembur_jam', label: 'Total Lembur (jam)', align: 'right' },
       ];
@@ -295,12 +318,19 @@
         { key: 'employee_name', label: 'Nama' },
         { key: 'department_name', label: 'Unit Kerja' },
         { key: 'hari_kerja', label: 'Hari Kerja', align: 'right' },
-        { key: 'hadir', label: 'Hadir', align: 'right' },
-        { key: 'telat', label: 'Telat', align: 'right' },
+        { key: 'kehadiran', label: 'Kehadiran', align: 'right' },
+        { key: 'telat', label: 'Terlambat', align: 'right',
+          render: function (r) {
+            return '<span title="Terlambat tetap dihitung sebagai kehadiran">' +
+              esc(App.formatNumber(r.telat || 0)) + '</span>';
+          } },
         { key: 'izin', label: 'Izin', align: 'right' },
         { key: 'sakit', label: 'Sakit', align: 'right' },
+        { key: 'cuti', label: 'Cuti', align: 'right' },
         { key: 'dinas_luar', label: 'Dinas Luar', align: 'right' },
+        { key: 'dinas_dalam', label: 'Dinas Dalam', align: 'right' },
         { key: 'alpa', label: 'Alpa', align: 'right' },
+        { key: 'belum', label: 'Belum', align: 'right' },
         { key: 'persen_hadir', label: '% Kehadiran', align: 'right', render: function (r) {
           return App.formatNumber(r.persen_hadir) + '%';
         } },

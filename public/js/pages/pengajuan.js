@@ -52,7 +52,7 @@
             return '<button class="btn sm" data-tab="' + esc(t.key) + '">' + esc(t.label) + '</button>';
           }).join('') +
           (App.can('attendance:write')
-            ? '<button class="btn sm primary" data-new="1">+ Input Pengajuan</button>'
+            ? '<button class="btn sm primary" data-new="1" id="pjNewBtn">+ Input Pengajuan</button>'
             : '') +
         '</div>' +
       '</div>' +
@@ -65,12 +65,28 @@
         root.querySelectorAll('[data-tab]').forEach(function (b) {
           b.classList.toggle('primary', b.getAttribute('data-tab') === currentTab);
         });
+
+        // Label tombol ikut menyesuaikan tab supaya tidak ambigu.
+        var nb = document.getElementById('pjNewBtn');
+        if (nb) {
+          nb.textContent = currentTab === 'reimburse'
+            ? '+ Input Pengajuan Biaya'
+            : '+ Input Pengajuan';
+        }
+
         renderBody();
       });
     });
 
     var newBtn = root.querySelector('[data-new]');
-    if (newBtn) newBtn.addEventListener('click', openCreateForm);
+    if (newBtn) {
+      newBtn.addEventListener('click', function () {
+        // Tombol input mengikuti tab aktif: di tab Reimburse ia harus membuka
+        // form biaya, bukan form cuti/izin (yang selalu ada di tab pertama).
+        if (currentTab === 'reimburse') openReimburseForm();
+        else openCreateForm();
+      });
+    }
 
     root.querySelector('[data-tab="leave"]').classList.add('primary');
 
@@ -135,6 +151,12 @@
         field('Tujuan / Lokasi', '<input type="text" id="ncPlace" placeholder="Wajib untuk dinas">') +
         field('Keterangan', '<input type="text" id="ncReason" placeholder="Alasan pengajuan (opsional)">') +
       '</div>' +
+      '<div class="field checkbox full mt" id="ncVehicleWrap" style="display:none">' +
+        '<input type="checkbox" id="ncUseVehicle">' +
+        '<label for="ncUseVehicle">Menggunakan kendaraan operasional</label>' +
+        '<span class="help">Setelah pengajuan disetujui, pengantar mobil keluar bisa dicetak ' +
+          'dari tombol pada daftar pengajuan.</span>' +
+      '</div>' +
       '<div class="field checkbox full mt">' +
         '<input type="checkbox" id="ncApprove" checked>' +
         '<label for="ncApprove">Langsung disetujui (tidak menunggu persetujuan)</label>' +
@@ -165,6 +187,8 @@
         var end = backdrop.querySelector('#ncEnd');
         var place = backdrop.querySelector('#ncPlace');
         var info = backdrop.querySelector('#ncInfo');
+        var vehicleWrap = backdrop.querySelector('#ncVehicleWrap');
+        var vehicleBox = backdrop.querySelector('#ncUseVehicle');
 
         function fillEmployees() {
           var list = byDept[dept.value] || employees;
@@ -181,7 +205,8 @@
           var list = (found && found.subtypes) || [];
           sub.innerHTML = list.map(function (s) {
             return '<option value="' + esc(s.key) + '" data-single="' + (s.single_day ? '1' : '') +
-              '" data-place="' + (s.needs_place ? '1' : '') + '">' + esc(s.label) + '</option>';
+              '" data-place="' + (s.needs_place ? '1' : '') +
+              '" data-vehicle="' + (s.needs_vehicle ? '1' : '') + '">' + esc(s.label) + '</option>';
           }).join('');
           syncSubtype();
         }
@@ -191,12 +216,22 @@
           if (!opt) return;
           var single = opt.getAttribute('data-single') === '1';
           var needPlace = opt.getAttribute('data-place') === '1';
+          var needVehicle = opt.getAttribute('data-vehicle') === '1';
+
           end.disabled = single;
           if (single) end.value = start.value;
           place.placeholder = needPlace ? 'Wajib diisi untuk dinas' : 'Tidak dipakai untuk jenis ini';
-          info.textContent = needPlace
-            ? 'Jenis ini wajib mengisi lokasi/tujuan.'
-            : 'Jenis ini tidak memerlukan lokasi/tujuan.';
+
+          // Opsi kendaraan hanya untuk Dinas Luar Kota. Centang sisa dari jenis
+          // lain dibuang supaya tidak ikut terkirim.
+          if (vehicleWrap) vehicleWrap.style.display = needVehicle ? '' : 'none';
+          if (!needVehicle && vehicleBox && vehicleBox.checked) vehicleBox.checked = false;
+
+          info.textContent = needVehicle
+            ? 'Dinas luar kota: centang bila memakai mobil kantor, agar bisa dibuat pengantar mobil keluar.'
+            : needPlace
+              ? 'Jenis ini wajib mengisi lokasi/tujuan.'
+              : 'Jenis ini tidak memerlukan lokasi/tujuan.';
         }
 
         dept.addEventListener('change', fillEmployees);
@@ -216,7 +251,8 @@
         var node = modalEl.querySelector('#' + id);
         return node ? node.value : '';
       };
-      var approveNode = modalEl.querySelector('#ncApprove');
+var approveNode = modalEl.querySelector('#ncApprove');
+      var vehicleBox = modalEl.querySelector('#ncUseVehicle');
 
       var payload = {
         category: get('ncCat'),
@@ -232,6 +268,8 @@
       if (!employeeId) { App.toast('Karyawan wajib dipilih.', 'error'); return; }
       if (!payload.subtype) { App.toast('Jenis pengajuan wajib dipilih.', 'error'); return; }
       if (!payload.start_date) { App.toast('Tanggal mulai wajib diisi.', 'error'); return; }
+
+      if (vehicleBox && vehicleBox.checked) payload.use_vehicle = true;
 
       api.post('/employees/' + employeeId + '/leaves', payload)
         .then(function () {
@@ -250,6 +288,248 @@
 
   function field(label, control) {
     return '<div class="field"><label>' + label + '</label>' + control + '</div>';
+  }
+
+  // ------------------------------------------------ Input reimburse (admin/HR)
+
+  /** Katalog jenis biaya; diambil sekali lalu dipakai ulang per baris. */
+  var reimburseCategories = [];
+
+  function loadReimburseCategories() {
+    if (reimburseCategories.length > 0) return Promise.resolve(reimburseCategories);
+
+    var meta_ = App.state.meta || {};
+    if (meta_.reimburse_categories && meta_.reimburse_categories.length > 0) {
+      reimburseCategories = meta_.reimburse_categories;
+      return Promise.resolve(reimburseCategories);
+    }
+
+    return api
+      .get('/auth/meta')
+      .then(function (r) {
+        App.state.meta = r.data;
+        reimburseCategories = (r.data && r.data.reimburse_categories) || [];
+        return reimburseCategories;
+      });
+  }
+
+  function openReimburseForm() {
+    if (!App.can('attendance:write')) {
+      App.toast('Anda tidak punya hak untuk input pengajuan.', 'error');
+      return;
+    }
+
+    Promise.all([
+      api.get('/employees/options/list'),
+      loadReimburseCategories(),
+    ])
+      .then(function (results) {
+        showReimburseModal(results[0].data || [], results[1] || []);
+      })
+      .catch(function (err) {
+        App.toast(err.message || 'Gagal memuat data karyawan.', 'error');
+      });
+  }
+
+  function reimburseRowHtml(categories, index) {
+    var opts = ['<option value="">-- pilih jenis --</option>']
+      .concat(
+        categories.map(function (c) {
+          return '<option value="' + esc(c.key) + '">' + esc(c.label) + '</option>';
+        })
+      )
+      .join('');
+
+    return (
+      '<div class="rr-item" data-rr-item>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Jenis Biaya</label>' +
+            '<select data-rr-cat>' + opts + '</select></div>' +
+          '<div class="field"><label>Keterangan <span class="req">*</span></label>' +
+            '<input type="text" data-rr-desc maxlength="500" ' +
+              'placeholder="Contoh: Tiket bus Surabaya - Darmstadt"></div>' +
+        '</div>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Jumlah (Rp) <span class="req">*</span></label>' +
+            '<input type="number" data-rr-amount min="1" step="0.01" placeholder="0"></div>' +
+          '<div class="field" style="align-self:end">' +
+            '<button type="button" class="btn sm danger" data-rr-remove' +
+              (index === 0 ? ' style="display:none"' : '') + '>Hapus Baris</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function showReimburseModal(employees, categories) {
+    if (categories.length === 0) {
+      App.toast('Katalog jenis biaya belum dimuat. Muat ulang halaman.', 'error');
+      return;
+    }
+
+    var bodyHtml =
+      '<div class="form-grid">' +
+        field('Karyawan <span class="req">*</span>', '<select id="nrEmp"></select>') +
+        field('Tanggal Transaksi', '<input type="date" id="nrDate" max="' + esc(App.today()) + '">' +
+          '<span class="help">Kosongkan bila tidak relevan. Maksimal 90 hari lalu.</span>') +
+      '</div>' +
+      '<div class="field"><label>Rincian Biaya <span class="req">*</span></label>' +
+        '<div id="nrItems">' + reimburseRowHtml(categories, 0) + '</div>' +
+        '<button type="button" class="btn sm" id="nrAddItem" style="margin-top:8px">+ Tambah Baris</button>' +
+        '<div class="help" id="nrTotal">Total: Rp 0</div>' +
+      '</div>' +
+      '<div class="field"><label>Lampirkan Bukti <span class="req">*</span></label>' +
+        '<input type="file" id="nrFile" accept=".jpg,.jpeg,.pdf,image/jpeg,application/pdf">' +
+        '<span class="help">Foto JPG/JPEG atau berkas PDF, maksimal 5 MB.</span></div>' +
+      '<div class="field checkbox full">' +
+        '<input type="checkbox" id="nrApprove" checked>' +
+        '<label for="nrApprove">Langsung disetujui (tidak menunggu persetujuan)</label>' +
+      '</div>' +
+      '<div class="callout mt">Pengajuan yang dicatat di sini behalf karyawan. ' +
+        'Karyawan tetap bisa membatalkan lewat portal bila statusnya masih Menunggu.</div>';
+
+    App.modal({
+      title: 'Input Pengajuan Biaya (Admin/HR)',
+      size: 'wide',
+      bodyHtml: bodyHtml,
+      actions: [
+        { label: 'Batal' },
+        { label: 'Simpan Pengajuan', className: 'primary', onClick: function (el) {
+            submitReimburse(el);
+            return false;
+          } },
+      ],
+      onMount: function (backdrop) {
+        var empSel = backdrop.querySelector('#nrEmp');
+        var itemsBox = backdrop.querySelector('#nrItems');
+        var totalBox = backdrop.querySelector('#nrTotal');
+
+        empSel.innerHTML = employees.length === 0
+          ? '<option value="">- tidak ada karyawan -</option>'
+          : employees
+              .map(function (e) {
+                return '<option value="' + esc(e.id) + '">' +
+                  esc(e.employee_code + ' - ' + e.name) + '</option>';
+              })
+              .join('');
+
+        function updateTotal() {
+          var sum = 0;
+          var blocks = itemsBox.querySelectorAll('[data-rr-item]');
+          for (var i = 0; i < blocks.length; i++) {
+            var v = Number(blocks[i].querySelector('[data-rr-amount]').value);
+            if (isFinite(v) && v > 0) sum += v;
+          }
+          totalBox.textContent = 'Total: Rp ' + App.fmtNumber(Math.round(sum * 100) / 100);
+        }
+
+        itemsBox.addEventListener('input', updateTotal);
+
+        backdrop.querySelector('#nrAddItem').addEventListener('click', function () {
+          var count = itemsBox.querySelectorAll('[data-rr-item]').length;
+          if (count >= 20) {
+            App.toast('Maksimal 20 baris per pengajuan.', 'error');
+            return;
+          }
+          itemsBox.insertAdjacentHTML('beforeend', reimburseRowHtml(categories, count));
+          updateTotal();
+        });
+
+        itemsBox.addEventListener('click', function (ev) {
+          var btn = ev.target.closest('[data-rr-remove]');
+          if (!btn) return;
+          var block = btn.closest('[data-rr-item]');
+          if (block) block.remove();
+          updateTotal();
+        });
+      },
+    });
+  }
+
+  function submitReimburse(modalEl) {
+    var get = function (id) {
+      var node = modalEl.querySelector('#' + id);
+      return node ? node.value : '';
+    };
+
+    var employeeId = get('nrEmp');
+    if (!employeeId) {
+      App.toast('Karyawan wajib dipilih.', 'error');
+      return;
+    }
+
+    var items = [];
+    var blocks = modalEl.querySelectorAll('[data-rr-item]');
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i];
+      var desc = block.querySelector('[data-rr-desc]').value.trim();
+      var amountRaw = block.querySelector('[data-rr-amount]').value.trim();
+      var amount = Number(amountRaw);
+
+      if (!desc) {
+        App.toast('Keterangan baris ' + (i + 1) + ' wajib diisi.', 'error');
+        return;
+      }
+      if (!amountRaw || !isFinite(amount) || amount <= 0) {
+        App.toast('Jumlah baris ' + (i + 1) + ' harus angka lebih dari nol.', 'error');
+        return;
+      }
+
+      items.push({
+        description: desc,
+        amount: amount,
+        category: block.querySelector('[data-rr-cat]').value,
+      });
+    }
+
+    // Bukti wajib. Dicek sebelum submit supaya pesan muncul langsung, tidak
+    // setelah menunggu server; server juga memvalidasi ulang.
+    var fileInput = modalEl.querySelector('#nrFile');
+    var file = fileInput && fileInput.files && fileInput.files[0];
+    if (!file) {
+      App.toast('Lampirkan bukti (foto JPG atau PDF) wajib diunggah.', 'error');
+      return;
+    }
+
+    var lowerName = file.name.toLowerCase();
+    var extOk =
+      lowerName.slice(-5) === '.jpeg' ||
+      lowerName.slice(-4) === '.jpg' ||
+      lowerName.slice(-4) === '.pdf';
+    if (!extOk) {
+      App.toast('Bukti hanya boleh berupa berkas JPG, JPEG, atau PDF.', 'error');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      App.toast('Ukuran berkas bukti maksimal 5 MB.', 'error');
+      return;
+    }
+
+    var approveNode = modalEl.querySelector('#nrApprove');
+    var fd = new FormData();
+    // items harus di-stringify karena FormData hanya menerima nilai string;
+    // server parses ulang JSON-nya.
+    fd.append('items', JSON.stringify(items));
+    var date = get('nrDate');
+    if (date) fd.append('expense_date', date);
+    fd.append('attachment', file, file.name);
+    fd.append('status', approveNode && approveNode.checked ? 'approved' : 'pending');
+
+    api
+      .upload('/employees/' + employeeId + '/reimburses', fd)
+      .then(function () {
+        App.toast(
+          fd.get('status') === 'approved'
+            ? 'Pengajuan biaya dicatat dan langsung disetujui.'
+            : 'Pengajuan biaya dicatat, menunggu persetujuan.',
+          'success'
+        );
+        modalEl.closeModal();
+        loadData();
+      })
+      .catch(function (err) {
+        App.toast(err.message || 'Gagal menyimpan pengajuan.', 'error');
+      });
   }
 
   function loadData() {
@@ -427,6 +707,15 @@
         },
       },
       {
+        key: 'kendaraan',
+        label: 'Kendaraan',
+        align: 'center',
+        render: function (r) {
+          if (!r.use_vehicle) return '<span class="faint">-</span>';
+          return '<span class="badge izin">Operasional</span>';
+        },
+      },
+      {
         key: 'aksi',
         label: 'Aksi',
         align: 'right',
@@ -542,6 +831,17 @@
     var pending = row.status === 'pending';
 
     var actions = [{ label: 'Tutup' }];
+    // Pengantar mobil hanya dicetak untuk pengajuan yang sudah disetujui.
+    if (Number(row.use_vehicle) === 1 && row.status === 'approved') {
+      actions.push({
+        label: 'Cetak Pengantar',
+        onClick: function (el) {
+          App.printVehicleNote(row);
+          el.closeModal();
+          return false;
+        },
+      });
+    }
     if (pending && !historyOnly) {
       actions.push({
         label: 'Tolak',
@@ -572,6 +872,7 @@
           kv('Jenis', row.subtype_label || row.leave_type || '-') +
           kv('Tanggal', row.date_range || row.start_date) +
           kv('Tujuan', row.place || '-') +
+          kv('Kendaraan', Number(row.use_vehicle) === 1 ? 'Operasional' : 'Tidak') +
           kv('Status', row.status_label || row.status) +
           kv('Diajukan', row.created_at) +
           kv('Pemeriksa', row.reviewer || '-') +
@@ -672,14 +973,15 @@
       },
       {
         key: 'description',
-        label: 'Deskripsi',
+        label: 'Rincian Biaya',
         render: function (r) {
-          return esc(r.description || '-');
+          return reimburseItemsHtml(r);
         },
       },
       {
         key: 'amount',
         label: 'Jumlah',
+        align: 'right',
         render: function (r) {
           return 'Rp ' + esc(App.fmtNumber(r.amount || 0));
         },
@@ -714,19 +1016,103 @@
     });
   }
 
+  /** Rincian per baris; data lama yang tidak punya items_json tetap terbaca. */
+  function reimburseItemsHtml(row) {
+    var lines = [];
+
+    if (row.category_label) {
+      lines.push('<span class="badge izin">' + esc(row.category_label) + '</span>');
+    }
+    if (row.expense_date) {
+      lines.push('<span class="small faint">' + esc(row.expense_date) + '</span>');
+    }
+
+    var html = lines.join(' ');
+
+    // Rincian asli disimpan di items_json; kolom description hanya ringkasan.
+    if (row.items_json) {
+      try {
+        var items = JSON.parse(row.items_json);
+        if (Array.isArray(items) && items.length > 0) {
+          var rowsHtml = items
+            .map(function (it) {
+              return (
+                '<div>- ' + esc(it.description || '') +
+                (it.amount ? ' <span class="small faint">Rp ' +
+                  esc(App.fmtNumber(it.amount)) + '</span>' : '') +
+                '</div>'
+              );
+            })
+            .join('');
+          html += '<div class="small">' + rowsHtml + '</div>';
+        }
+      } catch (err) {
+        html += '<div>' + esc(row.description || '-') + '</div>';
+      }
+    } else {
+      html += '<div>' + esc(row.description || '-') + '</div>';
+    }
+
+    if (row.attachment) {
+      html +=
+        '<div class="small faint">Bukti terlampir (' +
+        esc(String(row.attachment).slice(-3).toUpperCase()) +
+        ')</div>';
+    }
+
+    return html;
+  }
+
   function reviewReimburse(id, status) {
-    api
-      .put('/employees/reimburses/' + id + '/review', { status: status })
-      .then(function () {
-        App.toast(
-          status === 'approved' ? 'Reimburse disetujui.' : 'Reimburse ditolak.',
-          'success'
-        );
-        loadData();
-      })
-      .catch(function (err) {
-        App.toast(err.message, 'error');
-      });
+    if (status === 'approved') {
+      api
+        .put('/employees/reimburses/' + id + '/review', { status: status })
+        .then(function () {
+          App.toast('Reimburse disetujui.', 'success');
+          loadData();
+        })
+        .catch(function (err) {
+          App.toast(err.message, 'error');
+        });
+      return;
+    }
+
+    // Penolakan wajib beralasan: employeePortal/employeeUI menampilkan catatan
+    // ini ke pengaju, jadi tanpa alasan dia tidak tahu apa yang harus diperbaiki.
+    App.confirm({
+      title: 'Tolak pengajuan reimburse',
+      heading: 'Tolak pengajuan ini?',
+      message:
+        'Alasan penolakan wajib diisi. Alasan ini akan dibaca oleh pengaju ' +
+        'di portal karyawannya.',
+      confirmLabel: 'Tolak Pengajuan',
+      danger: true,
+      extraHtml:
+        '<div class="field"><label>Alasan Penolakan <span class="req">*</span></label>' +
+        '<textarea id="rrNote" rows="3" maxlength="500" ' +
+        'placeholder="Contoh: Kwitansi tidak dilampirkan, mohon kirim ulang"></textarea></div>',
+      onConfirm: function () {
+        var noteEl = document.getElementById('rrNote');
+        var note = noteEl ? noteEl.value.trim() : '';
+        if (!note) {
+          App.toast('Alasan penolakan wajib diisi.', 'error');
+          return;
+        }
+
+        api
+          .put('/employees/reimburses/' + id + '/review', {
+            status: 'rejected',
+            review_note: note,
+          })
+          .then(function () {
+            App.toast('Reimburse ditolak.', 'success');
+            loadData();
+          })
+          .catch(function (err) {
+            App.toast(err.message, 'error');
+          });
+      },
+    });
   }
 
   /** Riwayat reimburse beserta status, pemeriksa, dan waktunya. */
@@ -742,13 +1128,18 @@
             esc(r.employee_code) + '</span>';
         },
       },
-      { key: 'description', label: 'Deskripsi', render: function (r) {
-        return esc(r.description || '-');
+      { key: 'description', label: 'Rincian Biaya', render: function (r) {
+        return reimburseItemsHtml(r);
       } },
       { key: 'amount', label: 'Jumlah', align: 'right', render: function (r) {
         return 'Rp ' + esc(App.fmtNumber(r.amount || 0));
       } },
       { key: 'status', label: 'Status', render: function (r) { return statusBadge(r.status); } },
+      { key: 'review_note', label: 'Catatan Pemeriksa', render: function (r) {
+        return r.review_note
+          ? esc(r.review_note)
+          : '<span class="faint">-</span>';
+      } },
       { key: 'reviewer', label: 'Pemeriksa', render: function (r) {
         return r.reviewer ? esc(r.reviewer) : '<span class="faint">-</span>';
       } },

@@ -191,10 +191,15 @@ async function remove(id) {
   return { deleted: true, shift };
 }
 
-/** Apakah shift ini merupakan hari kerja untuk tanggal tertentu? */
+/**
+ * Apakah shift ini merupakan hari kerja untuk tanggal tertentu.
+ *
+ * Tanpa shift berarti karyawan tidak punya jam kerja tetap, jadi semua hari
+ * (kecuali Minggu) dianggap hari kerja. Aturan Minggu ditegakkan di
+ * isWorkDay sehingga tidak bisa dilewati dari jalur mana pun.
+ */
 function isWorkingDay(shift, date) {
-  if (!shift) return true;
-  return isWorkDay(shift.work_days, date);
+  return isWorkDay(shift ? shift.work_days : '', date);
 }
 
 /** Durasi kerja efektif shift dalam menit, dikurangi waktu istirahat. */

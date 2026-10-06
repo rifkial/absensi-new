@@ -1044,6 +1044,93 @@ td.mono {
   }
 }
 
+/* ------------------------------------------------------ Dokumen cetak (surat)
+ * Dokumen seperti pengantar mobil keluar dirender di dalam modal. Saat
+ * window.print() dipanggil, hanya .print-doc yang boleh ikut tercetak; sisanya
+ * (sidebar, topbar, isi modal lain) disembunyikan.
+ * -------------------------------------------------------------------------- */
+
+.print-doc {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  color: #111;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.print-doc-head {
+  text-align: center;
+  margin-bottom: 18px;
+}
+
+.print-doc-head .org {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.print-doc-head .title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 10px;
+  text-decoration: underline;
+}
+
+.print-doc-meta {
+  margin-bottom: 14px;
+}
+
+.print-doc-meta p {
+  margin: 2px 0;
+}
+
+.print-doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 12px;
+}
+
+.print-doc-table th,
+.print-doc-table td {
+  border: 1px solid #444;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.print-doc-table th {
+  width: 165px;
+  background: #f2f2f2;
+  font-weight: 600;
+}
+
+.print-doc-note {
+  margin-top: 10px;
+  font-size: 11.5px;
+}
+
+.print-doc-sign {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 26px;
+}
+
+.print-doc-sign div {
+  width: 240px;
+  text-align: center;
+}
+
+.print-doc-sign .space {
+  height: 64px;
+}
+
+.print-doc-sign .name {
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.print-doc-sign .role {
+  font-size: 11.5px;
+}
+
 @media print {
   .sidebar,
   .topbar,
@@ -1059,4 +1146,38 @@ td.mono {
     box-shadow: none;
     border-color: #ccc;
   }
+
+  /* Cetak pengantar: sisakan dokumennya saja, dan letakkan di kiri atas
+     supaya tidak ada halaman kosong akibat margin modal. */
+  .modal-backdrop {
+    position: static !important;
+    background: none !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  .modal-backdrop .modal {
+    box-shadow: none !important;
+    border: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+
+  .modal-backdrop .modal-header,
+  .modal-backdrop .modal-footer {
+    display: none !important;
+  }
+
+  .modal-backdrop .modal-body {
+    padding: 0 !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+}
+
+/* Tombol cetak disembunyikan saat print, tapi dokumennya tetap tampil. */
+.print-only {
+  display: none;
 }

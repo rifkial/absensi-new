@@ -10,6 +10,7 @@ const audit = require('../services/audit');
 const settings = require('../services/settings');
 const throttle = require('../services/loginThrottle');
 const leaveCatalog = require('../services/leaveCatalog');
+const reimburseCatalog = require('../services/reimburseCatalog');
 
 const router = express.Router();
 
@@ -191,6 +192,12 @@ router.get(
         devices,
         // Katalog pengajuan untuk form admin/HR (izin, cuti, dinas).
         leave_categories: leaveCatalog.toPublicOptions(),
+        // Katalog jenis biaya reimburse untuk form admin/HR.
+        reimburse_categories: reimburseCatalog.toPublicOptions(),
+        // Untuk template cetak pengantar mobil keluar.
+        company_name: settings.DEFAULTS.company_name,
+        operational_vehicle: settings.DEFAULTS.operational_vehicle,
+        vehicle_signatory: settings.DEFAULTS.vehicle_signatory,
       },
     });
   })

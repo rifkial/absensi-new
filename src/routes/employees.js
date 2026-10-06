@@ -11,6 +11,8 @@ const employees = require('../services/employees');
 const attendance = require('../services/attendance');
 const leaveCatalog = require('../services/leaveCatalog');
 const leaveQuota = require('../services/leaveQuota');
+const reimburseCatalog = require('../services/reimburseCatalog');
+const portal = require('../services/employeePortal');
 const audit = require('../services/audit');
 const { parseCsv, detectDelimiter } = require('../devices/csv/adapter');
 const { toDate } = require('../utils/date');
@@ -20,6 +22,21 @@ const router = express.Router();
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024 },
+});
+
+// Bukti reimbursement: hanya foto JPG/JPEG atau PDF, maks 5 MB.
+// Dipisah dari `upload` (yang longgar untuk impor CSV/XLSX) supaya tipe berkas
+// di sini benar-benar dibatasi.
+const reimburseUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: portal.MAX_ATTACHMENT_BYTES + 1024, files: 1 },
+  fileFilter(req, file, cb) {
+    if (!portal.ATTACHMENT_MIME[file.mimetype]) {
+      cb(badRequest('Bukti hanya boleh berupa foto JPG/JPEG atau berkas PDF.'));
+      return;
+    }
+    cb(null, true);
+  },
 });
 
 router.use(auth.requireAuth);
@@ -355,6 +372,9 @@ router.post(
 
     const reason = payload.reason ? String(payload.reason).trim().slice(0, 500) : null;
 
+    // Kendaraan operasional hanya untuk dinas luar kota (lihat employeePortal).
+    const useVehicle = portal.normalizeUseVehicle(payload.use_vehicle, subtype);
+
     // Admin/HR boleh mencatat pengajuan atas nama karyawan. Status awal
     // default 'pending' (ikut alur persetujuan), atau langsung 'approved'
     // bila pengajuan dicatat beserta persetujuannya.
@@ -365,14 +385,15 @@ router.post(
 
     const result = await db.execute(
       `INSERT INTO leave_requests
-         (employee_id, leave_type, subtype, place, start_date, end_date, reason,
+         (employee_id, leave_type, subtype, place, use_vehicle, start_date, end_date, reason,
           status, reviewed_by, reviewed_at, review_note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${initialStatus === 'approved' ? 'NOW()' : 'NULL'}, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${initialStatus === 'approved' ? 'NOW()' : 'NULL'}, ?)`,
       [
         employeeId,
         subtype.leave_type,
         subtype.key,
         place,
+        useVehicle,
         startDate,
         endDate,
         reason,
@@ -590,6 +611,8 @@ function decorateLeave(row, quota = null) {
     quota_days: days,
     leave_quota: quota,
     quota_short: quota ? days > quota.remaining : false,
+    // Tombol cetak pengantar mobil hanya untuk dinas luar kota.
+    can_request_vehicle: leaveCatalog.VEHICLE_SUBTYPES.includes(row.subtype),
   };
 }
 
@@ -670,10 +693,71 @@ router.get(
 function decorateReimburse(row) {
   return {
     ...row,
+    amount: Number(row.amount || 0),
     status_label: statusLabel(row.status),
     reviewer: row.reviewer_full_name || row.reviewer_name || null,
+    category_label: reimburseCatalog.labelFor(row.category),
   };
 }
+
+/**
+ * Input pengajuan reimburse oleh admin/HR behalf karyawan.
+ *
+ * dipakai ketika pengajuan dibuat manual (mis. karyawan kirim bukti lewat
+ * kertas, atau ada karyawan yang tidak memakai portal). Normalnya karyawan
+ * sendiri yang lewat POST /api/me/reimburses.
+ *
+ * Perbedaan dari portal: boleh langsung disetujui dalam satu langkah
+ * (`status`), karena di sinilah orang yang berwenang sudah memverifikasi.
+ */
+router.post(
+  '/:id/reimburses',
+  auth.requirePermission('attendance:write'),
+  reimburseUpload.single('attachment'),
+  wrap(async (req, res) => {
+    const employeeId = Number(req.params.id);
+    await employees.getOrFail(employeeId);
+
+    // req.body berisi string karena request multipart; items sudah dibaca
+    // ulang oleh reimburseCatalog.normalizeItems.
+    const payload = req.body || {};
+    const status = payload.status === 'approved' ? 'approved' : 'pending';
+    const reviewNote = payload.review_note
+      ? String(payload.review_note).trim().slice(0, 500)
+      : null;
+
+    const row = await portal.createReimburse(employeeId, payload, req.file || null);
+
+    if (status === 'approved') {
+      await db.execute(
+        "UPDATE reimburses SET status = 'approved', reviewed_by = ?, reviewed_at = NOW(), review_note = ? WHERE id = ?",
+        [req.user.id, reviewNote || 'Dicatat dan disetujui oleh admin/HR', row.id]
+      );
+    } else if (reviewNote) {
+      await db.execute('UPDATE reimburses SET review_note = ? WHERE id = ?', [reviewNote, row.id]);
+    }
+
+    const saved = await db.queryOne('SELECT * FROM reimburses WHERE id = ?', [row.id]);
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'reimburse.create',
+      entity: 'reimburses',
+      entityId: saved.id,
+      before: null,
+      after: { status: saved.status, amount: saved.amount },
+      detail: {
+        employee_id: employeeId,
+        jumlah: saved.amount,
+        keterangan: saved.description,
+        input_oleh: 'admin',
+      },
+    });
+
+    res.status(201).json({ ok: true, data: saved });
+  })
+);
 
 /** Review reimburse (approve/reject). */
 router.put(
@@ -685,21 +769,28 @@ router.put(
       throw badRequest("status harus 'approved' atau 'rejected'.");
     }
 
-    const beforeStatus = await db.queryScalar(
-      'SELECT status FROM reimburses WHERE id = ?',
-      [Number(req.params.reimburseId)]
+    const reimburseId = Number(req.params.reimburseId);
+
+    const before = await db.queryOne(
+      `SELECT r.id, r.status, r.employee_id, r.amount, r.description
+         FROM reimburses r
+        WHERE r.id = ?`,
+      [reimburseId]
+    );
+    if (!before) throw notFound('Reimburse tidak ditemukan.');
+
+    // Menolak tanpa alasan tidak_actionable bagi karyawan, jadi diwajibkan.
+    const reviewNote = req.body?.review_note ? String(req.body.review_note).trim().slice(0, 500) : null;
+    if (decision === 'rejected' && !reviewNote) {
+      throw badRequest('Alasan penolakan wajib diisi.');
+    }
+
+    await db.execute(
+      'UPDATE reimburses SET status = ?, reviewed_by = ?, reviewed_at = NOW(), review_note = ? WHERE id = ?',
+      [decision, req.user.id, reimburseId, reviewNote]
     );
 
-    const result = await db.execute(
-      'UPDATE reimburses SET status = ?, reviewed_by = ?, reviewed_at = NOW() WHERE id = ?',
-      [decision, req.user.id, Number(req.params.reimburseId)]
-    );
-
-    if (result.affectedRows === 0) throw notFound('Reimburse tidak ditemukan.');
-
-    const row = await db.queryOne('SELECT * FROM reimburses WHERE id = ?', [
-      Number(req.params.reimburseId),
-    ]);
+    const row = await db.queryOne('SELECT * FROM reimburses WHERE id = ?', [reimburseId]);
 
     await audit.recordChange({
       userId: req.user.id,
@@ -707,8 +798,8 @@ router.put(
       action: 'reimburse.review',
       entity: 'reimburses',
       entityId: row.id,
-      before: { status: beforeStatus },
-      after: { status: row.status, review_note: req.body?.review_note || null },
+      before: { status: before.status, review_note: null },
+      after: { status: row.status, review_note: reviewNote },
       detail: {
         employee_id: row.employee_id,
         jumlah: row.amount,

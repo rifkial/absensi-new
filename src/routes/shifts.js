@@ -8,7 +8,12 @@ const { badRequest } = require('../utils/errors');
 const db = require('../db/pool');
 const shifts = require('../services/shifts');
 const audit = require('../services/audit');
-const { toDate, dateRange } = require('../utils/date');
+const {
+  toDate,
+  dateRange,
+  isWorkDay,
+  parseWorkDaysStrict,
+} = require('../utils/date');
 
 const router = express.Router();
 
@@ -147,7 +152,17 @@ router.post(
   })
 );
 
-/** Membuat jadwal hari kerja berulang untuk seluruh karyawan selama N hari. */
+/**
+ * Membuat jadwal hari kerja berulang untuk seluruh karyawan selama N hari.
+ *
+ * `work_days` (opsional) = daftar hari kerja yang dipakai untuk SEMUA karyawan
+ * pada rentang ini, ditulis sebagai "1,2,3,4,5". Bila diisi, daftar ini yang
+ * menentukan hari kerja, bukan milik shift masing-masing; berguna untuk
+ * perusahaan yang punya jadwal(global) yang berbeda dari shift.
+ *
+ * Bila `work_days` tidak diisi, tiap karyawan memakai `work_days` shift-nya
+ * seperti sebelumnya. Hari Minggu tetap libur apa pun pilihannya.
+ */
 router.post(
   '/generate-schedule',
   auth.requirePermission('attendance:write'),
@@ -161,6 +176,13 @@ router.post(
 
     const dates = dateRange(startDate, endDate);
     if (dates.length > 120) throw badRequest('Maksimal 120 hari sekaligus.');
+
+    // Daftar hari kerja global dari form pembuatan jadwal. Dipakai bila diisi,
+    // dan divalidasi ketat supaya angka 7 (Minggu) tidak bisa lolos.
+    const body = req.body || {};
+    const globalDays = body.work_days
+      ? parseWorkDaysStrict(body.work_days, { label: 'work_days' })
+      : null;
 
     const where = ["status <> 'resign'"];
     const params = [];
@@ -178,23 +200,30 @@ router.post(
     let skipped = 0;
 
     for (const employee of employees) {
-      if (!employee.shift_id) {
+      const shift = employee.shift_id ? await shifts.getById(employee.shift_id) : null;
+
+      // Tanpa jadwal global, karyawan tanpa shift dilewati karena hari kerjanya
+      // tidak bisa ditentukan. Dengan jadwal global, semua karyawan ikut.
+      if (!globalDays && !shift) {
         skipped += 1;
         continue;
       }
-      const shift = await shifts.getById(employee.shift_id);
-      if (!shift) {
+      if (!globalDays && shift && Number(shift.is_active) !== 1) {
         skipped += 1;
         continue;
       }
 
       for (const workDate of dates) {
-        const working = shifts.isWorkingDay(shift, workDate);
+        // Hari kerja global menang bila diisi; kalau tidak, pakai shift karyawan.
+        const working = globalDays
+          ? isWorkDay(globalDays.join(','), workDate)
+          : shifts.isWorkingDay(shift, workDate);
+
         await db.execute(
           `INSERT INTO schedules (employee_id, work_date, shift_id, day_type)
            VALUES (?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE shift_id = VALUES(shift_id), day_type = VALUES(day_type)`,
-          [employee.id, workDate, employee.shift_id, working ? 'kerja' : 'libur']
+          [employee.id, workDate, employee.shift_id || null, working ? 'kerja' : 'libur']
         );
         created += 1;
       }
@@ -209,6 +238,8 @@ router.post(
         employees: employees.length,
         created,
         skipped,
+        // Ditampilkan di UI supaya admin tahu jadwal mana yang dipakai.
+        work_days: globalDays ? globalDays.join(',') : null,
       },
     });
   })

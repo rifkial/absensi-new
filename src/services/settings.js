@@ -38,6 +38,10 @@ const DEFAULTS = {
   // supaya hari Minggu tidak dihitung sebagai hari kerja.
   global_work_days: '1,2,3,4,5',
 
+  // Kendaraan operasional & penandatangan pengantar mobil keluar.
+  operational_vehicle: '',
+  vehicle_signatory: '',
+
   // hari libur nasional
   // holiday_sync_enabled  = ambil daftar libur dari API secara otomatis
   // holiday_sync_interval_days = jarak antar percobaan sinkron otomatis
@@ -236,9 +240,11 @@ function normalize(payload = {}) {
   intText('global_late_tolerance', 0, 240, 10);
   optionalTime('global_break_start');
   optionalTime('global_break_end');
+  text('operational_vehicle', 120);
+  text('vehicle_signatory', 120);
   if (payload.global_work_days !== undefined) {
-    // Validasi ketat juga di sini: nilai 0 (indeks UI versi lama) ditolak,
-    // bukan dibuang sehingga hari Minggu tidak hilang tanpa jejak.
+    // Validasi ketat juga di sini: nilai 0 (indeks UI versi lama) dan angka 7
+    // (Minggu) ditolak, bukan dibuang, supaya admin melihat pesan yang jelas.
     const days = parseWorkDaysStrict(payload.global_work_days, { label: 'global_work_days' });
     out.global_work_days = days.join(',');
   }
@@ -337,22 +343,22 @@ async function updateMany(payload = {}) {
 }
 
 /**
- * Bersihkan daftar hari kerja (1..7) menjadi string "1,2,3,4,5".
- * Nilai kosong / tidak valid memakai fallback supaya rekap tidak pernah
- * salah anggap hari Minggu sebagai hari kerja.
+ * Bersihkan daftar hari kerja menjadi string "1,2,3,4,5".
+ *
+ * Angka 7 (Minggu) dibuang: hari Minggu tidak pernah boleh menjadi hari kerja.
+ * Nilai kosong / tidak valid memakai fallback supaya rekap tidak pernah salah
+ * anggap hari Minggu sebagai hari kerja.
  */
 function normalizeWorkDays(value, fallback) {
-  const list = String(value === undefined || value === null ? '' : value)
-    .split(',')
-    .map((v) => Number.parseInt(v.trim(), 10))
-    .filter((v) => Number.isInteger(v) && v >= 1 && v <= 7);
-  const unique = [...new Set(list)].sort((a, b) => a - b);
+  const unique = parseWorkDays(
+    String(value === undefined || value === null ? '' : value)
+  ).sort((a, b) => a - b);
   return unique.length > 0 ? unique.join(',') : fallback;
 }
 
 /**
- * Daftar hari kerja global (1..7) dari pengaturan, dalam bentuk array angka.
- * Nilai kosong berarti semua hari dianggap hari kerja.
+ * Daftar hari kerja global dari pengaturan, dalam bentuk array angka.
+ * Nilai kosong berarti semua hari kecuali Minggu dianggap hari kerja.
  */
 function globalWorkDays(settings = {}) {
   return parseWorkDays(normalizeWorkDays(settings.global_work_days, ''));

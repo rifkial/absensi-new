@@ -120,8 +120,16 @@ async function buildDailyRows({ from, to, departmentId = null, employeeId = null
 }
 
 /**
- * Rekap satu bulan per karyawan: total hadir/telat/izin/alpa, total jam kerja,
- * total lembur, dan rata-rata keterlambatan.
+ * Rekap satu bulan per karyawan: total hari kerja, hadir/telat/izin/alpa,
+ * total jam kerja, total lembur, dan akumulasi keterlambatan.
+ *
+ * Catatan tentang hitungan:
+ *   - `total_days` tetap COUNT(*) baris kalender, dipakai untuk audit data.
+ *   - `total_hari_kerja` = baris yang bukan hari libur, inilah pembagi
+ *     persentase kehadiran.
+ *   - Kehadiran = hadir + telat + dinas luar + cuti. Keterlambatan tidak
+ *     mengurangi kehadiran, dan cuti resmi juga tidak karena tidak mengurangi
+ *     kehadiran yang diakui. Izin & sakit tidak dihitung sebagai kehadiran.
  */
 async function buildMonthlyRows({ month, departmentId = null, employeeId = null }) {
   const from = `${month}-01`;
@@ -145,12 +153,23 @@ async function buildMonthlyRows({ month, departmentId = null, employeeId = null 
        e.id AS employee_id, e.employee_code, e.name AS employee_name, e.device_user_id,
        dep.name AS department_name, pos.name AS position_name,
        COUNT(*) AS total_days,
+       SUM(d.status <> 'hari_libur') AS total_hari_kerja,
        SUM(d.status = 'hadir') AS total_hadir,
        SUM(d.status = 'telat') AS total_telat,
+       -- Kehadiran = hadir + telat + dinas luar + dinas dalam + cuti.
+       --   telat       : tetap hadir, keterlambatannya dicatat terpisah
+       --   dinas luar  : tugas lapangan, tetap jam kerja
+       --   dinas dalam : tugas lapangan dalam kota, juga hadir
+       --   cuti        : cuti resmi tidak mengurangi kehadiran yang diakui
+       -- PENTING: daftar ini harus sama dengan ATTENDED_STATUSES di
+       -- services/attendance.js ditambah 'cuti'. Status yang masuk hari kerja
+       -- tapi tidak ada di sini akan diam-diam memotong persentase kehadiran.
+       SUM(d.status IN ('hadir', 'telat', 'dinas_luar', 'dinas_dalam', 'cuti')) AS total_kehadiran,
        SUM(d.status = 'izin') AS total_izin,
        SUM(d.status = 'sakit') AS total_sakit,
        SUM(d.status = 'cuti') AS total_cuti,
        SUM(d.status = 'dinas_luar') AS total_dinas_luar,
+       SUM(d.status = 'dinas_dalam') AS total_dinas_dalam,
        SUM(d.status = 'alpa') AS total_alpa,
        SUM(d.status = 'belum') AS total_belum,
        SUM(d.status = 'hari_libur') AS total_libur,
@@ -194,11 +213,18 @@ async function buildAttendanceRecapRows({ from, to, departmentId = null, employe
        dep.name AS department_name,
        pos.name AS position_name,
        SUM(d.status <> 'hari_libur') AS total_hari_kerja,
-       SUM(d.status IN ('hadir', 'telat')) AS total_hadir,
+       -- Kehadiran = hadir + telat + dinas luar + dinas dalam + cuti
+       -- (lihat catatan pada buildMonthlyRows).
+       SUM(d.status IN ('hadir', 'telat', 'dinas_luar', 'dinas_dalam', 'cuti')) AS total_hadir,
        SUM(d.status = 'izin') AS total_izin,
        SUM(d.status = 'cuti') AS total_cuti,
        SUM(d.status = 'dinas_luar') AS total_dinas_luar,
+       SUM(d.status = 'dinas_dalam') AS total_dinas_dalam,
        SUM(d.status = 'telat') AS total_hari_terlambat,
+       SUM(d.status = 'sakit') AS total_sakit,
+       SUM(d.status = 'alpa') AS total_alpa,
+       SUM(d.status = 'belum') AS total_belum,
+       SUM(d.status = 'hari_libur') AS total_libur,
        SUM(d.overtime_minutes) AS total_overtime_minutes
      FROM attendance_daily d
      JOIN employees e ON e.id = d.employee_id
@@ -328,8 +354,11 @@ async function build(format, options = {}) {
           telat: 0,
           izin: 0,
           sakit: 0,
+          cuti: 0,
           dinas_luar: 0,
+          dinas_dalam: 0,
           alpa: 0,
+          belum: 0,
           total_late_minutes: 0,
           total_work_minutes: 0,
         });
@@ -338,8 +367,13 @@ async function build(format, options = {}) {
       if (row.status === 'hari_libur') continue;
       bucket.hari_kerja += 1;
       if (bucket[row.status] !== undefined) bucket[row.status] += 1;
-      // Dinas luar dihitung sebagai kehadiran: tugas lapangan tetap jam kerja.
-      if (row.status === 'dinas_luar') bucket.hadir += 1;
+      // Dinas (luar & dalam) dan cuti dihitung sebagai kehadiran:
+      //   - dinas luar/dalam : tugas lapangan, tetap jam kerja
+      //   - cuti             : cuti resmi tidak mengurangi kehadiran
+      // Izin, sakit, alpa, dan belum sengaja TIDAK dihitung.
+      if (row.status === 'dinas_luar' || row.status === 'dinas_dalam' || row.status === 'cuti') {
+        bucket.hadir += 1;
+      }
       bucket.total_late_minutes += Number(row.late_minutes || 0);
       bucket.total_work_minutes += Number(row.work_minutes || 0);
     }
@@ -347,10 +381,16 @@ async function build(format, options = {}) {
     return {
       format,
       range: { from, to },
-      rows: [...byEmployee.values()].map((r) => ({
-        ...r,
-        persen_hadir: r.hari_kerja > 0 ? Math.round((r.hadir / r.hari_kerja) * 100) : 0,
-      })),
+      rows: [...byEmployee.values()].map((r) => {
+        // Telat tetap hadir, jadi kehadiran = hadir + telat. Dinas luar dan
+        // cuti sudah ditambahkan ke bucket.hadir di loop di atas.
+        const kehadiran = r.hadir + r.telat;
+        return {
+          ...r,
+          kehadiran,
+          persen_hadir: r.hari_kerja > 0 ? Math.round((kehadiran / r.hari_kerja) * 100) : 0,
+        };
+      }),
       columns: EMPLOYEE_COLUMNS,
       meta: { total: byEmployee.size, summary },
     };
@@ -408,23 +448,40 @@ function decorateDailyRow(row) {
   };
 }
 
+/**
+ * Rekap bulanan per karyawan.
+ *
+ * Persentase kehadiran memakai `total_kehadiran` dibagi `total_hari_kerja`.
+ *
+ * Yang dihitung sebagai kehadiran: hadir, telat, dinas luar, dinas dalam,
+ * dan cuti.
+ *   - telat       : tetap hadir; keterlambatannya dicatat terpisah
+ *   - dinas luar  : tugas lapangan, tetap jam kerja
+ *   - dinas dalam : tugas lapangan dalam kota, juga hadir
+ *   - cuti        : cuti resmi tidak mengurangi kehadiran yang diakui
+ *
+ * Daftar ini WAJIB sama dengan ATTENDED_STATUSES di services/attendance.js
+ * ditambah 'cuti'. Kalau ada status yang terhitung sebagai hari kerja tapi
+ * tidak ada di sini, ia akan diam-diam memotong persentase kehadiran.
+ *
+ * Izin, sakit, alpa, dan belum tidak termasuk; semuanya tetap muncul sebagai
+ * kolom tersendiri supaya mudah diaudit.
+ */
 function decorateMonthlyRow(row) {
+  const hariKerja = Number(row.total_hari_kerja || 0);
+  const terlambat = Number(row.total_telat || 0);
+  // Kehadiran = hadir + telat + dinas luar + cuti (dihitung di SQL).
+  const kehadiran = Number(row.total_kehadiran || 0);
+
   return {
     ...row,
     employee_name: row.employee_name,
-    persen_hadir:
-      Number(row.total_hadir || 0) +
-        Number(row.total_telat || 0) +
-        Number(row.total_dinas_luar || 0) >
-      0
-        ? Math.round(
-            ((Number(row.total_hadir || 0) +
-              Number(row.total_telat || 0) +
-              Number(row.total_dinas_luar || 0)) /
-              Math.max(1, Number(row.total_days || 0) - Number(row.total_libur || 0))) *
-              100
-          )
-        : 0,
+    total_hari_kerja: hariKerja,
+    total_kehadiran: kehadiran,
+    persen_hadir: hariKerja > 0 ? Math.round((kehadiran / hariKerja) * 100) : 0,
+    // Jumlah hari yang telat, diakumulasikan terpisah dari kehadiran.
+    total_hari_terlambat: terlambat,
+    total_late_jam: (Number(row.total_late_minutes || 0) / 60).toFixed(2),
     rata_late_jam: (Number(row.avg_late_minutes || 0) / 60).toFixed(2),
     total_kerja_jam: (Number(row.total_work_minutes || 0) / 60).toFixed(2),
     total_lembur_jam: (Number(row.total_overtime_minutes || 0) / 60).toFixed(2),
@@ -440,9 +497,19 @@ function decorateOvertimeRow(row) {
 }
 
 function decorateAttendanceRecapRow(row) {
+  const hariKerja = Number(row.total_hari_kerja || 0);
+  const terlambat = Number(row.total_hari_terlambat || 0);
+  // Kehadiran sudah termasuk telat, dinas luar, dan cuti (lihat query).
+  const kehadiran = Number(row.total_hadir || 0);
+
   return {
     ...row,
     no_urut: 0,
+    total_hari_kerja: hariKerja,
+    total_hadir: kehadiran,
+    // Jumlah hari terlambat, diakumulasikan terpisah dari kehadiran.
+    total_hari_terlambat: terlambat,
+    persen_hadir: hariKerja > 0 ? Math.round((kehadiran / hariKerja) * 100) : 0,
     total_lembur_jam: (Number(row.total_overtime_minutes || 0) / 60).toFixed(2),
   };
 }
@@ -473,15 +540,17 @@ const MONTHLY_COLUMNS = [
   { key: 'employee_name', header: 'Nama', width: 26 },
   { key: 'department_name', header: 'Departemen', width: 20 },
   { key: 'position_name', header: 'Jabatan', width: 18 },
-  { key: 'total_days', header: 'Total Hari', width: 12 },
-  { key: 'total_hadir', header: 'Hadir', width: 9 },
-  { key: 'total_telat', header: 'Telat', width: 9 },
+  { key: 'total_hari_kerja', header: 'Total Hari Kerja', width: 15 },
+  { key: 'total_kehadiran', header: 'Total Kehadiran', width: 16 },
+  { key: 'total_telat', header: 'Terlambat (tetap hadir)', width: 19 },
   { key: 'total_izin', header: 'Izin', width: 9 },
   { key: 'total_sakit', header: 'Sakit', width: 9 },
   { key: 'total_cuti', header: 'Cuti', width: 9 },
   { key: 'total_dinas_luar', header: 'Dinas Luar', width: 13 },
+  { key: 'total_dinas_dalam', header: 'Dinas Dalam', width: 13 },
   { key: 'total_alpa', header: 'Alpa', width: 9 },
   { key: 'persen_hadir', header: '% Kehadiran', width: 13 },
+  { key: 'total_hari_terlambat', header: 'Jml Hari Terlambat', width: 17 },
   { key: 'total_late_minutes', header: 'Total Telat (menit)', width: 18 },
   { key: 'rata_late_jam', header: 'Rata-rata Telat (jam)', width: 19 },
   { key: 'max_late_minutes', header: 'Telat Terlama (menit)', width: 20 },
@@ -521,11 +590,15 @@ const EMPLOYEE_COLUMNS = [
   { key: 'employee_name', header: 'Nama', width: 26 },
   { key: 'department_name', header: 'Departemen', width: 20 },
   { key: 'hari_kerja', header: 'Hari Kerja', width: 12 },
-  { key: 'hadir', header: 'Hadir', width: 9 },
-  { key: 'telat', header: 'Telat', width: 9 },
+  { key: 'kehadiran', header: 'Kehadiran', width: 12 },
+  { key: 'telat', header: 'Terlambat (tetap hadir)', width: 19 },
   { key: 'izin', header: 'Izin', width: 9 },
   { key: 'sakit', header: 'Sakit', width: 9 },
+  { key: 'cuti', header: 'Cuti', width: 9 },
+  { key: 'dinas_luar', header: 'Dinas Luar', width: 13 },
+  { key: 'dinas_dalam', header: 'Dinas Dalam', width: 13 },
   { key: 'alpa', header: 'Alpa', width: 9 },
+  { key: 'belum', header: 'Belum', width: 9 },
   { key: 'persen_hadir', header: '% Kehadiran', width: 13 },
   { key: 'total_late_minutes', header: 'Total Telat (menit)', width: 18 },
   { key: 'total_work_minutes', header: 'Total Kerja (menit)', width: 18 },
@@ -549,12 +622,18 @@ const ATTENDANCE_RECAP_COLUMNS = [
   { key: 'employee_name', header: 'Nama', width: 26 },
   { key: 'department_name', header: 'Divisi/Departemen', width: 20 },
   { key: 'position_name', header: 'Jabatan', width: 18 },
-  { key: 'total_hari_kerja', header: 'Total Hari Kerja', width: 14 },
-  { key: 'total_hadir', header: 'Total Kehadiran', width: 14 },
+  { key: 'total_hari_kerja', header: 'Total Hari Kerja', width: 15 },
+  { key: 'total_hadir', header: 'Total Kehadiran', width: 16 },
   { key: 'total_izin', header: 'Total Izin', width: 10 },
+  { key: 'total_sakit', header: 'Total Sakit', width: 12 },
   { key: 'total_cuti', header: 'Total Cuti', width: 10 },
   { key: 'total_dinas_luar', header: 'Total Dinas Luar', width: 14 },
+  { key: 'total_dinas_dalam', header: 'Total Dinas Dalam', width: 15 },
   { key: 'total_hari_terlambat', header: 'Total Hari Terlambat', width: 16 },
+  { key: 'total_alpa', header: 'Total Alpa', width: 11 },
+  { key: 'total_belum', header: 'Total Belum', width: 12 },
+  { key: 'total_libur', header: 'Total Libur', width: 11 },
+  { key: 'persen_hadir', header: '% Kehadiran', width: 13 },
   { key: 'total_lembur_jam', header: 'Total Lemburan (jam)', width: 16 },
 ];
 

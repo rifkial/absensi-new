@@ -817,7 +817,6 @@
         label: 'Cuti',
         subtypes: [
           { key: 'cuti_tahunan', label: 'Cuti Tahunan' },
-          { key: 'cuti_sakit', label: 'Cuti Sakit' },
           { key: 'cuti_melahirkan', label: 'Cuti Melahirkan' },
           { key: 'cuti_menikah', label: 'Cuti Menikah' },
           { key: 'cuti_haji', label: 'Cuti Haji / Umrah' },
@@ -837,7 +836,8 @@
           { key: 'izin_kebutuhan_pribadi', label: 'Izin Keperluan Pribadi' },
           { key: 'izin_keluarga', label: 'Izin Mengurus Keluarga' },
           { key: 'izin_administrasi', label: 'Izin Mengurus Administrasi / Dokumen' },
-          { key: 'izin_sakit', label: 'Izin Sakit' },
+          // Tidak ada Izin Sakit / Cuti Sakit: kondisi sakit diinput
+          // sebagai izin biasa, sehingga tercatat sebagai izin.
           { key: 'izin_meninggal', label: 'Izin Kematian Keluarga' },
           { key: 'izin_lainnya', label: 'Izin Lainnya' },
         ],
@@ -859,13 +859,19 @@
     App.modal({
       title: 'Pengajuan: ' + emp.name,
       bodyHtml:
-        '<div class="callout">Setelah disetujui, rekap otomatis akan berstatus izin / sakit / cuti / dinas sehingga tidak dihitung alpa.</div>' +
+        '<div class="callout">Setelah disetujui, rekap otomatis akan berstatus izin / cuti / dinas sehingga tidak dihitung alpa. ' +
+          'Kondisi sakit diisi sebagai izin biasa.</div>' +
         '<div class="field"><label>Kategori <span class="req">*</span></label>' +
           '<select id="lvCategory">' + categoryOptions + '</select></div>' +
         '<div class="field" id="lvSubtypeWrap"><label>Jenis <span class="req">*</span></label>' +
           '<select id="lvSubtype"></select></div>' +
         '<div class="field" id="lvPlaceWrap" style="display:none"><label>Tujuan / Lokasi <span class="req">*</span></label>' +
           '<input type="text" id="lvPlace" maxlength="150" placeholder="Contoh: Kantor cabang Surabaya"></div>' +
+        '<div class="field checkbox full mt" id="lvVehicleWrap" style="display:none">' +
+          '<input type="checkbox" id="lvUseVehicle">' +
+          '<label for="lvUseVehicle">Menggunakan kendaraan operasional</label>' +
+          '<span class="help">Setelah pengajuan disetujui, pengantar mobil keluar bisa dicetak dari menu Pengajuan.</span>' +
+        '</div>' +
         '<div class="form-grid">' +
           '<div class="field"><label>Tanggal Mulai <span class="req">*</span></label>' +
             '<input type="date" id="lvStart" value="' + esc(App.today()) + '"></div>' +
@@ -892,6 +898,7 @@
             var end = el.querySelector('#lvEnd').value;
             var reason = el.querySelector('#lvReason').value.trim();
             var place = el.querySelector('#lvPlace').value.trim();
+            var vehicleBox = el.querySelector('#lvUseVehicle');
 
             if (!start || !end) { App.toast('Tanggal wajib diisi.', 'error'); return false; }
             if (end < start) { App.toast('Tanggal selesai tidak boleh lebih awal.', 'error'); return false; }
@@ -907,6 +914,7 @@
               reason: reason,
             };
             if (place) payload.place = place;
+            if (vehicleBox && vehicleBox.checked) payload.use_vehicle = true;
 
             api.post('/employees/' + emp.id + '/leaves', payload)
               .then(function (res) {
@@ -936,6 +944,15 @@
     var subtypeWrap = document.getElementById('lvSubtypeWrap');
     var placeWrap = document.getElementById('lvPlaceWrap');
     var endWrap = document.getElementById('lvEndWrap');
+    var vehicleWrap = document.getElementById('lvVehicleWrap');
+    var vehicleBox = document.getElementById('lvUseVehicle');
+
+    /** Opsi kendaraan hanya untuk Dinas Luar Kota. */
+    function syncVehicle(sub) {
+      var show = Boolean(sub && sub.key === 'dinas_luar_kota');
+      if (vehicleWrap) vehicleWrap.style.display = show ? '' : 'none';
+      if (!show && vehicleBox && vehicleBox.checked) vehicleBox.checked = false;
+    }
 
     function updateForm() {
       var catKey = categorySelect.value;
@@ -947,6 +964,7 @@
         subtypeWrap.style.display = 'none';
         placeWrap.style.display = 'none';
         endWrap.style.display = '';
+        syncVehicle(null);
         return;
       }
 
@@ -961,6 +979,7 @@
 
       placeWrap.style.display = isDinas ? '' : 'none';
       endWrap.style.display = isSingleDay ? 'none' : '';
+      syncVehicle(sub);
     }
 
     categorySelect.addEventListener('change', updateForm);
@@ -980,6 +999,7 @@
       var isSingleDay = sub.single_day;
       placeWrap.style.display = isDinas ? '' : 'none';
       endWrap.style.display = isSingleDay ? 'none' : '';
+      syncVehicle(sub);
     });
 
     updateForm();

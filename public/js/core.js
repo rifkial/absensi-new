@@ -664,6 +664,91 @@ belum: 'Belum Absen',
     return LEGEND_COLORS[key] || '#94a3b8';
   }
 
+  // ---------------------------------------------------- Dokumen cetak (surat)
+
+  /**
+   * Cetak pengantar mobil keluar untuk pengajuan dinas luar kota.
+   *
+   * @param {Object} row  baris pengajuan dari API (leave_requests)
+   * @param {Object} info { company, address, phone, vehicle_no, signatory }
+   *
+   * Dokumen dirender di dalam modal lalu dicetak dengan window.print(); CSS
+   * @media print menyembunyikan seluruh kerangka aplikasi dan hanya menyisakan
+   * isi .print-doc.
+   */
+  function printVehicleNote(row, info) {
+    var cfg = info || {};
+    var meta = state.meta || {};
+    var company = cfg.company || meta.company_name || 'Nama Perusahaan';
+    var vehicleNo = cfg.vehicle_no || meta.operational_vehicle || '';
+    var signatory = cfg.signatory || meta.vehicle_signatory || '';
+    var signRole = cfg.sign_role || (signatory ? '' : 'Mengetahui,');
+    var employeeName = row.employee_name || cfg.employee_name || '-';
+    var employeeCode = row.employee_code || '';
+
+    var periode =
+      row.start_date === row.end_date
+        ? formatDate(row.start_date)
+        : formatDate(row.start_date) + ' s/d ' + formatDate(row.end_date);
+
+    var html =
+      '<div class="print-doc">' +
+        '<div class="print-doc-head">' +
+          '<div class="org">' + escapeHtml(company.toUpperCase()) + '</div>' +
+          (cfg.address
+            ? '<div class="small">' + escapeHtml(cfg.address) + '</div>'
+            : '') +
+          (cfg.phone ? '<div class="small">Telp. ' + escapeHtml(cfg.phone) + '</div>' : '') +
+          '<div class="title">SURAT PENGANTAR MOBIL KELUAR</div>' +
+        '</div>' +
+        '<div class="print-doc-meta">' +
+          '<p>Nomor: ' + escapeHtml(cfg.number || '-') + '</p>' +
+          '<p>Lampiran: ' + (row.id ? '1 (satu) berkas' : '-') + '</p>' +
+        '</div>' +
+        '<p>Yang bertanda tangan di bawah ini:</p>' +
+        '<table class="print-doc-table">' +
+          '<tr><th>Nama</th><td>' + escapeHtml(employeeName) +
+            (employeeCode ? ' (' + escapeHtml(employeeCode) + ')' : '') + '</td></tr>' +
+          '<tr><th>Jabatan</th><td>' + escapeHtml(row.position_name || '-') + '</td></tr>' +
+          '<tr><th>Unit Kerja</th><td>' + escapeHtml(row.department_name || '-') + '</td></tr>' +
+          '<tr><th>Nomor Kendaraan</th><td>' + escapeHtml(vehicleNo || '-') + '</td></tr>' +
+          '<tr><th>Tujuan</th><td>' + escapeHtml(row.place || '-') + '</td></tr>' +
+          '<tr><th>Keperluan</th><td>' + escapeHtml(row.reason || '-') + '</td></tr>' +
+          '<tr><th>Tanggal keberangkatan</th><td>' + escapeHtml(periode) + '</td></tr>' +
+        '</table>' +
+        '<p class="print-doc-note">Pengantar ini wajib dikembalikan ke ' +
+          'keamanan bersama saat kendaraan kembali ke kantor.</p>' +
+        '<div class="print-doc-sign">' +
+          '<div>' +
+            '<div>' + escapeHtml(cfg.sign_place || company) + ',</div>' +
+            '<div>' + escapeHtml(formatDateFull(todayStr())) + '</div>' +
+            '<div class="space"></div>' +
+            '<div>' + escapeHtml(signRole) + '</div>' +
+            '<div class="name">' + escapeHtml(signatory || '..............................') + '</div>' +
+            '<div class="role">Tanda tangan &amp; stempel</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    modal({
+      title: 'Pengantar Mobil Keluar',
+      size: 'wide',
+      bodyHtml: html,
+      actions: [
+        { label: 'Tutup' },
+        {
+          label: 'Cetak',
+          className: 'primary',
+          onClick: function () {
+            window.print();
+            // false supaya modal tetap terbuka bila mau dicetak lagi.
+            return false;
+          },
+        },
+      ],
+    });
+  }
+
   // ------------------------------------------------------------------ Expose
 
   window.App = {
@@ -710,5 +795,6 @@ belum: 'Belum Absen',
     loading: loadingRow,
     chart: stackedBarChart,
     legendColor: legendColor,
+    printVehicleNote: printVehicleNote,
   };
 })();

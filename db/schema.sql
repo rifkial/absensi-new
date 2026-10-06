@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS leave_requests (
                COMMENT 'sub-jenis rinci, mis. cuti_melahirkan / izin_keluarga / dinas_luar_kota',
   place        VARCHAR(150) NULL
                COMMENT 'lokasi/tujuan dinas',
+  use_vehicle  TINYINT(1) NOT NULL DEFAULT 0
+               COMMENT '1 = dinas luar kota memakai kendaraan operasional',
   start_date   DATE         NOT NULL,
   end_date     DATE         NOT NULL,
   reason       VARCHAR(500) NULL,
@@ -170,20 +172,28 @@ CREATE TABLE IF NOT EXISTS leave_requests (
 
 -- ---------------------------------------------------------------------------
 -- 7. Reimburse karyawan
+--    Pengajuan dibuat dari portal karyawan, ditinjau admin/HR di menu Pengajuan.
+--    category = jenis biaya (lihat services/reimburseCatalog.js), expense_date =
+--    tanggal transaksi, bukan tanggal pengajuan.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS reimburses (
   id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
   employee_id  INT UNSIGNED NOT NULL,
+  category     VARCHAR(50)  NULL     COMMENT 'Jenis biaya, mis. transport / makan / penginapan',
   description  VARCHAR(500) NOT NULL,
   amount       DECIMAL(12,2) NOT NULL DEFAULT 0,
-  attachment   VARCHAR(255) NULL,
+  expense_date DATE         NULL     COMMENT 'Tanggal transaksi',
+  attachment   VARCHAR(255) NULL     COMMENT 'Nama berkas bukti di folder privat, bukan path dari user',
+  items_json   TEXT         NULL     COMMENT 'Rincian biaya JSON bila pengajuan berisi lebih dari satu baris',
   status       ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
   reviewed_by  INT UNSIGNED NULL,
   reviewed_at  DATETIME     NULL,
+  review_note  VARCHAR(500) NULL     COMMENT 'Alasan penolakan / catatan pemeriksa',
   created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_reimburse_employee (employee_id),
   KEY ix_reimburse_status (status),
+  KEY ix_reimburse_expense_date (expense_date),
   CONSTRAINT fk_reimburse_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE,
   CONSTRAINT fk_reimburse_reviewer FOREIGN KEY (reviewed_by)  REFERENCES app_users  (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

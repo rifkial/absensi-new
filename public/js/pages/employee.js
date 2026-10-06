@@ -15,7 +15,6 @@
       label: 'Cuti',
       subtypes: [
         { key: 'cuti_tahunan', label: 'Cuti Tahunan' },
-        { key: 'cuti_sakit', label: 'Cuti Sakit' },
         { key: 'cuti_melahirkan', label: 'Cuti Melahirkan' },
         { key: 'cuti_menikah', label: 'Cuti Menikah' },
         { key: 'cuti_haji', label: 'Cuti Haji / Umrah' },
@@ -35,7 +34,8 @@
         { key: 'izin_kebutuhan_pribadi', label: 'Izin Keperluan Pribadi' },
         { key: 'izin_keluarga', label: 'Izin Mengurus Keluarga' },
         { key: 'izin_administrasi', label: 'Izin Mengurus Administrasi / Dokumen' },
-        { key: 'izin_sakit', label: 'Izin Sakit' },
+        // Tidak ada Izin Sakit / Cuti Sakit: kondisi sakit diinput sebagai
+        // izin biasa, sehingga tercatat sebagai izin.
         { key: 'izin_meninggal', label: 'Izin Kematian Keluarga' },
         { key: 'izin_lainnya', label: 'Izin Lainnya' },
       ],
@@ -180,12 +180,14 @@
       '</div>' +
       '<div id="empDutyCard" class="card"></div>' +
       '<div id="empLeaveCard" class="card"></div>' +
+      '<div id="empReimburseCard" class="card"></div>' +
       '<div id="empRecapCard" class="card"></div>';
 
     loadProfile();
     loadToday();
     loadDuty();
     loadLeaves();
+    loadReimburses();
     loadRecap();
   }
 
@@ -201,6 +203,9 @@
         var d = res.data;
         var e = d.employee;
         var quota = d.leave_quota || null;
+        // Disimpan untuk template pengantar mobil keluar.
+        employeeName = e.name || '-';
+        employeeAddress = e.address || '';
 
         el.innerHTML =
           '<div class="card-header">' +
@@ -619,13 +624,30 @@
           },
           { key: 'review_note', label: 'Catatan' },
           {
+            key: 'kendaraan',
+            label: 'Kendaraan',
+            align: 'center',
+            render: function (r) {
+              if (!r.use_vehicle) return '<span class="faint">-</span>';
+              return '<span class="badge izin" title="Memakai kendaraan operasional">Operasional</span>';
+            },
+          },
+          {
             key: 'aksi',
             label: '',
             align: 'right',
             render: function (r) {
-              return r.status === 'pending'
-                ? '<button class="btn sm danger" data-cancel="' + esc(r.id) + '">Batalkan</button>'
-                : '';
+              var buttons = '';
+              // Pengantar hanya boleh dicetak setelah pengajuan disetujui,
+              // supaya tidak ada surat keluar untuk tugas yang belum disetujui.
+              if (Number(r.use_vehicle) === 1 && r.status === 'approved') {
+                buttons +=
+                  '<button class="btn sm" data-vehicle="' + esc(r.id) + '">Cetak Pengantar</button> ';
+              }
+              if (r.status === 'pending') {
+                buttons += '<button class="btn sm danger" data-cancel="' + esc(r.id) + '">Batalkan</button>';
+              }
+              return buttons;
             },
           },
         ];
@@ -646,12 +668,46 @@
             confirmCancelLeave(btn.getAttribute('data-cancel'));
           });
         });
+
+        Array.prototype.forEach.call(document.querySelectorAll('[data-vehicle]'), function (btn) {
+          btn.addEventListener('click', function () {
+            printVehicleNote(btn.getAttribute('data-vehicle'), rows);
+          });
+        });
       })
       .catch(function (err) {
         var el = document.getElementById('empLeaveCard');
         if (el) el.innerHTML = errorBlock('Gagal memuat pengajuan', err);
       });
   }
+
+  /**
+ * Cetak pengantar mobil keluar untuk salah satu pengajuan di tabel.
+ * Barisnya sudah ada di memori (hasil /me/leaves), jadi tidak perlu request lagi.
+ */
+  function printVehicleNote(id, rows) {
+    var row = null;
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].id) === String(id)) { row = rows[i]; break; }
+    }
+    if (!row) {
+      App.toast('Pengajuan tidak ditemukan.', 'error');
+      return;
+    }
+    if (Number(row.use_vehicle) !== 1) {
+      App.toast('Pengajuan ini tidak memakai kendaraan operasional.', 'error');
+      return;
+    }
+
+    App.printVehicleNote(row, {
+      employee_name: employeeName,
+      sign_place: employeeAddress,
+    });
+  }
+
+  /** Data karyawan sendiri, dipakai sebagai nama penandatangan pengantar. */
+  var employeeName = '-';
+  var employeeAddress = '';
 
   function confirmCancelLeave(id) {
     App.confirm({
@@ -688,6 +744,12 @@
           '<select id="lfSubtype"></select></div>' +
         '<div class="field" id="lfPlaceWrap" style="display:none"><label>Tujuan / Lokasi <span class="req">*</span></label>' +
           '<input type="text" id="lfPlace" maxlength="150" placeholder="Contoh: Kantor cabang Surabaya"></div>' +
+        '<div class="field checkbox full mt" id="lfVehicleWrap" style="display:none">' +
+          '<input type="checkbox" id="lfUseVehicle">' +
+          '<label for="lfUseVehicle">Menggunakan kendaraan operasional</label>' +
+          '<span class="help">Centang bila memakai mobil kantor. Setelah pengajuan disetujui, ' +
+            'Anda bisa mencetak pengantar mobil keluar dari daftar pengajuan.</span>' +
+        '</div>' +
         '<div class="form-grid">' +
           '<div class="field"><label>Tanggal Mulai <span class="req">*</span></label>' +
             '<input type="date" id="lfStart" value="' + esc(App.today()) + '"></div>' +
@@ -712,6 +774,8 @@
             var end = el.querySelector('#lfEnd').value || start;
             var reason = el.querySelector('#lfReason').value.trim();
             var place = el.querySelector('#lfPlace').value.trim();
+            var vehicleBox = el.querySelector('#lfUseVehicle');
+            var useVehicle = Boolean(vehicleBox && vehicleBox.checked);
 
             if (!start) {
               App.toast('Tanggal mulai wajib diisi.', 'error');
@@ -730,6 +794,7 @@
               reason: reason,
             };
             if (place) payload.place = place;
+            if (useVehicle) payload.use_vehicle = true;
 
             api
               .post('/me/leaves', payload)
@@ -759,7 +824,18 @@
     var subtypeWrap = document.getElementById('lfSubtypeWrap');
     var placeWrap = document.getElementById('lfPlaceWrap');
     var endWrap = document.getElementById('lfEndWrap');
+    var vehicleWrap = document.getElementById('lfVehicleWrap');
+    var vehicleBox = document.getElementById('lfUseVehicle');
     if (!categorySelect || !subtypeSelect) return;
+
+    /** Opsi kendaraan hanya untuk Dinas Luar Kota. */
+    function syncVehicle(sub) {
+      var show = Boolean(sub && sub.key === 'dinas_luar_kota');
+      if (vehicleWrap) vehicleWrap.style.display = show ? '' : 'none';
+      // Centang yang tersisa dari jenis lain harus dibuang, kalau tidak
+      // checkbox tersembunyi ikut terkirim.
+      if (!show && vehicleBox && vehicleBox.checked) vehicleBox.checked = false;
+    }
 
     function updateForm() {
       var catKey = categorySelect.value;
@@ -771,6 +847,7 @@
         subtypeWrap.style.display = 'none';
         placeWrap.style.display = 'none';
         endWrap.style.display = '';
+        syncVehicle(null);
         return;
       }
 
@@ -785,6 +862,7 @@
 
       placeWrap.style.display = isDinas ? '' : 'none';
       endWrap.style.display = isSingleDay ? 'none' : '';
+      syncVehicle(sub);
     }
 
     categorySelect.addEventListener('change', updateForm);
@@ -804,9 +882,389 @@
       var isSingleDay = sub.single_day;
       placeWrap.style.display = isDinas ? '' : 'none';
       endWrap.style.display = isSingleDay ? 'none' : '';
+      syncVehicle(sub);
     });
 
     updateForm();
+  }
+
+  // ---------------------------------------------------------------- Reimburse
+
+  var REIMBURSE_CATEGORIES = [];
+
+  function loadReimburseCategories() {
+    if (REIMBURSE_CATEGORIES.length > 0) return Promise.resolve(REIMBURSE_CATEGORIES);
+    return api
+      .get('/me/reimburse-options')
+      .then(function (res) {
+        REIMBURSE_CATEGORIES = res.data || [];
+        return REIMBURSE_CATEGORIES;
+      })
+      .catch(function () {
+        return REIMBURSE_CATEGORIES;
+      });
+  }
+
+  function loadReimburses() {
+    var el = document.getElementById('empReimburseCard');
+    if (!el) return;
+
+    api
+      .get('/me/reimburses', { limit: 50 })
+      .then(function (res) {
+        var rows = res.data || [];
+        if (!el.isConnected) return;
+
+        var pending = 0;
+        var approved = 0;
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].status === 'pending') pending += 1;
+          if (rows[i].status === 'approved') approved += 1;
+        }
+
+        var columns = [
+          { key: 'created_at', label: 'Diajukan', render: function (r) {
+            return '<div class="nowrap">' + esc(App.fmtDate(r.created_at)) + '</div>';
+          } },
+          { key: 'expense_date', label: 'Tgl. Transaksi', render: function (r) {
+            return r.expense_date ? esc(r.expense_date) : '<span class="faint">-</span>';
+          } },
+          { key: 'category_label', label: 'Jenis', render: function (r) {
+            return r.category_label ? esc(r.category_label) : '<span class="faint">-</span>';
+          } },
+          { key: 'description', label: 'Keterangan' },
+          { key: 'amount', label: 'Jumlah', align: 'right', render: function (r) {
+            return 'Rp ' + esc(App.fmtNumber(r.amount));
+          } },
+          { key: 'attachment', label: 'Bukti', align: 'center', render: function (r) {
+            if (!r.attachment) return '<span class="faint">-</span>';
+            return '<button class="btn sm" data-rb-file="' + esc(r.id) +
+              '" data-rb-kind="' + esc(r.attachment_kind || 'image') + '">' +
+              (r.attachment_kind === 'pdf' ? 'Lihat PDF' : 'Lihat') +
+              '</button>';
+          } },
+          { key: 'status', label: 'Status', render: function (r) {
+            var cls = r.status === 'approved' ? 'hadir' : r.status === 'rejected' ? 'alpa' : 'telat';
+            return '<span class="badge ' + cls + '">' +
+              esc(r.status_label || App.LEAVE_STATUS_LABELS[r.status] || r.status) + '</span>' +
+              (r.review_note ? '<div class="small faint">' + esc(r.review_note) + '</div>' : '');
+          } },
+          { key: 'aksi', label: '', align: 'right', render: function (r) {
+            return r.status === 'pending'
+              ? '<button class="btn sm danger" data-rb-cancel="' + esc(r.id) + '">Batalkan</button>'
+              : '';
+          } },
+        ];
+
+        var stats = rows.length
+          ? '<div class="stat-grid">' +
+              statBox('Total Pengajuan', esc(App.fmtNumber(rows.length))) +
+              statBox('Menunggu', esc(App.fmtNumber(pending))) +
+              statBox('Disetujui', esc(App.fmtNumber(approved))) +
+              statBox(
+                'Total Disetujui',
+                'Rp ' + esc(App.fmtNumber(approvedTotal(rows)))
+              ) +
+            '</div>'
+          : '';
+
+        el.innerHTML =
+          '<div class="card-header">' +
+            '<h2 class="card-title">Pengajuan Reimbursement</h2>' +
+            '<button class="btn primary sm" id="btnNewReimburse">+ Pengajuan Biaya</button>' +
+          '</div>' +
+          (stats ? '<div class="card-body">' + stats + '</div>' : '') +
+          '<div class="card-body tight">' +
+            App.table(columns, rows, {
+              empty: 'Belum ada pengajuan reimburse.',
+              emptyIcon: '&#128176;',
+            }) +
+          '</div>';
+
+        var btn = document.getElementById('btnNewReimburse');
+        if (btn) btn.addEventListener('click', openReimburseForm);
+
+        Array.prototype.forEach.call(
+          document.querySelectorAll('[data-rb-cancel]'),
+          function (b) {
+            b.addEventListener('click', function () {
+              confirmCancelReimburse(b.getAttribute('data-rb-cancel'));
+            });
+          }
+        );
+
+        Array.prototype.forEach.call(
+          document.querySelectorAll('[data-rb-file]'),
+          function (b) {
+            b.addEventListener('click', function () {
+              openReimburseFile(
+                b.getAttribute('data-rb-file'),
+                b.getAttribute('data-rb-kind')
+              );
+            });
+          }
+        );
+      })
+      .catch(function (err) {
+        if (!el.isConnected) return;
+        el.innerHTML = errorBlock('Gagal memuat pengajuan reimburse', err);
+      });
+  }
+
+  function approvedTotal(rows) {
+    var sum = 0;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].status === 'approved') sum += Number(rows[i].amount || 0);
+    }
+    return Math.round(sum * 100) / 100;
+  }
+
+  function openReimburseFile(id, kind) {
+    var url = '/api/me/reimburses/' + encodeURIComponent(id) + '/attachment';
+    fetch(url, { headers: { Authorization: 'Bearer ' + api.token } })
+      .then(function (res) {
+        if (!res.ok) throw new Error('Bukti tidak bisa dimuat.');
+        return res.blob();
+      })
+      .then(function (blob) {
+        var objectUrl = URL.createObjectURL(blob);
+
+        // PDF tidak bisa dirender di dalam <img>. Untuk PDF, buka di tab baru
+        // lewat object URL supaya viewer bawaan browser yang menampilkannya.
+        if (kind === 'pdf') {
+          window.open(objectUrl, '_blank', 'noopener');
+          App.toast('Bukti PDF dibuka di tab baru.', 'info');
+          return;
+        }
+
+        App.modal({
+          title: 'Bukti Pengajuan Biaya',
+          size: 'wide',
+          bodyHtml: '<img src="' + objectUrl + '" alt="Bukti pengajuan biaya" ' +
+            'style="width:100%;border-radius:8px">',
+          actions: [{ label: 'Tutup' }],
+        });
+      })
+      .catch(function (err) {
+        App.toast(err.message, 'error');
+      });
+  }
+
+  function confirmCancelReimburse(id) {
+    App.confirm({
+      title: 'Batalkan pengajuan biaya',
+      heading: 'Batalkan pengajuan ini?',
+      message: 'Pengajuan yang masih menunggu akan ditandai ditolak.',
+      confirmLabel: 'Ya, Batalkan',
+      onConfirm: function () {
+        api
+          .del('/me/reimburses/' + id)
+          .then(function () {
+            App.toast('Pengajuan reimburse dibatalkan.', 'success');
+            loadReimburses();
+          })
+          .catch(function (err) {
+            App.toast(err.message, 'error');
+          });
+      },
+    });
+  }
+
+  /** Satu baris rincian biaya yang bisa ditambah/hapus di form. */
+  function reimburseItemRow(categories, index) {
+    var options = ['<option value="">-- pilih jenis --</option>']
+      .concat(
+        categories.map(function (c) {
+          return '<option value="' + esc(c.key) + '">' + esc(c.label) + '</option>';
+        })
+      )
+      .join('');
+
+    return (
+      '<div class="reimburse-item" data-rb-item>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Jenis Biaya</label>' +
+            '<select data-rb-cat>' + options + '</select></div>' +
+          '<div class="field"><label>Keterangan <span class="req">*</span></label>' +
+            '<input type="text" data-rb-desc maxlength="500" ' +
+              'placeholder="Contoh: Tiket buses Surabaya - Darmstadt"></div>' +
+        '</div>' +
+        '<div class="form-grid">' +
+          '<div class="field"><label>Jumlah (Rp) <span class="req">*</span></label>' +
+            '<input type="number" data-rb-amount min="1" step="0.01" placeholder="0"></div>' +
+          '<div class="field" style="align-self:end">' +
+            '<button type="button" class="btn sm danger" data-rb-remove' +
+              (index === 0 ? ' style="display:none"' : '') + '>Hapus Baris</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function openReimburseForm() {
+    loadReimburseCategories().then(function (categories) {
+      App.modal({
+        title: 'Pengajuan Reimbursement',
+        size: 'wide',
+        bodyHtml:
+          '<div class="callout">Isi rincian biaya yang sedang dikeluarkan. ' +
+            'Pengajuan diteruskan ke admin/HR untuk persetujuan. ' +
+            'Bukti foto (kuitansi/nota) dilampirkan bila ada.</div>' +
+          '<div class="form-grid">' +
+            '<div class="field"><label>Tanggal Transaksi</label>' +
+              '<input type="date" id="rfDate" max="' + esc(App.today()) + '">' +
+              '<span class="help">Kosongkan bila tidak relevan. Maksimal 90 hari lalu.</span></div>' +
+          '</div>' +
+          '<div class="field"><label>Rincian Biaya <span class="req">*</span></label>' +
+            '<div id="rfItems">' +
+              reimburseItemRow(categories, 0) +
+            '</div>' +
+            '<button type="button" class="btn sm" id="rfAddItem" ' +
+              'style="margin-top:8px">+ Tambah Baris</button>' +
+            '<div class="help" id="rfTotal">Total: Rp 0</div>' +
+          '</div>' +
+          '<div class="field"><label>Lampirkan Bukti <span class="req">*</span></label>' +
+            '<input type="file" id="rfFile" accept=".jpg,.jpeg,.pdf,image/jpeg,application/pdf">' +
+            '<span class="help">Foto JPG/JPEG atau berkas PDF, maksimal 5 MB. ' +
+              'Wajib melampirkan bukti (kwitansi atau nota).</span></div>',
+        onMount: function (el) {
+          var itemsBox = el.querySelector('#rfItems');
+          var totalBox = el.querySelector('#rfTotal');
+
+          function collect() {
+            var items = [];
+            var blocks = itemsBox.querySelectorAll('[data-rb-item]');
+            for (var i = 0; i < blocks.length; i++) {
+              var block = blocks[i];
+              items.push({
+                category: block.querySelector('[data-rb-cat]').value,
+                description: block.querySelector('[data-rb-desc]').value.trim(),
+                amount: Number(block.querySelector('[data-rb-amount]').value),
+              });
+            }
+            return items;
+          }
+
+          function updateTotal() {
+            var sum = 0;
+            var items = collect();
+            for (var i = 0; i < items.length; i++) {
+              if (isFinite(items[i].amount) && items[i].amount > 0) sum += items[i].amount;
+            }
+            totalBox.textContent = 'Total: Rp ' + App.fmtNumber(Math.round(sum * 100) / 100);
+          }
+
+          itemsBox.addEventListener('input', updateTotal);
+
+          el.querySelector('#rfAddItem').addEventListener('click', function () {
+            var count = itemsBox.querySelectorAll('[data-rb-item]').length;
+            if (count >= 20) {
+              App.toast('Maksimal 20 baris per pengajuan.', 'error');
+              return;
+            }
+            itemsBox.insertAdjacentHTML(
+              'beforeend',
+              reimburseItemRow(categories, count)
+            );
+            updateTotal();
+          });
+
+          itemsBox.addEventListener('click', function (ev) {
+            var btn = ev.target.closest('[data-rb-remove]');
+            if (!btn) return;
+            var block = btn.closest('[data-rb-item]');
+            if (block) block.remove();
+            updateTotal();
+          });
+        },
+        actions: [
+          { label: 'Batal' },
+          {
+            label: 'Kirim Pengajuan',
+            className: 'primary',
+            onClick: function (el) {
+              var items = [];
+              var blocks = el.querySelectorAll('[data-rb-item]');
+
+              for (var i = 0; i < blocks.length; i++) {
+                var block = blocks[i];
+                var description = block.querySelector('[data-rb-desc]').value.trim();
+                var amountRaw = block.querySelector('[data-rb-amount]').value.trim();
+                var amount = Number(amountRaw);
+
+                if (!description) {
+                  App.toast('Keterangan baris ' + (i + 1) + ' wajib diisi.', 'error');
+                  return false;
+                }
+                if (!amountRaw || !isFinite(amount) || amount <= 0) {
+                  App.toast('Jumlah baris ' + (i + 1) + ' harus angka lebih dari nol.', 'error');
+                  return false;
+                }
+
+                items.push({
+                  description: description,
+                  amount: amount,
+                  category: block.querySelector('[data-rb-cat]').value,
+                });
+              }
+
+              if (items.length === 0) {
+                App.toast('Minimal satu baris rincian wajib diisi.', 'error');
+                return false;
+              }
+
+              var fileInput = el.querySelector('#rfFile');
+              var file = fileInput && fileInput.files && fileInput.files[0];
+
+              // Bukti wajib: validasi di sini supaya karyawan tidak menunggu
+              // round-trip ke server hanya untuk ditolak.
+              if (!file) {
+                App.toast('Lampirkan bukti (foto JPG atau PDF) wajib diunggah.', 'error');
+                return false;
+              }
+
+              // Ekstensi dicek di sisi klien supaya pesan muncul sebelum upload.
+              // Server tetap memvalidasi ulang lewat mimeType, jadi ini hanya
+              // untuk kenyamanan, bukan pengaman.
+              var lower = file.name.toLowerCase();
+              var extOk =
+                lower.slice(-5) === '.jpeg' ||
+                lower.slice(-4) === '.jpg' ||
+                lower.slice(-4) === '.pdf';
+              if (!extOk) {
+                App.toast('Bukti hanya boleh berupa berkas JPG, JPEG, atau PDF.', 'error');
+                return false;
+              }
+              if (file.size > 5 * 1024 * 1024) {
+                App.toast('Ukuran berkas bukti maksimal 5 MB.', 'error');
+                return false;
+              }
+
+              var date = el.querySelector('#rfDate').value;
+              var fd = new FormData();
+              fd.append('items', JSON.stringify(items));
+              if (date) fd.append('expense_date', date);
+              fd.append('attachment', file, file.name);
+
+              api
+                .upload('/me/reimburses', fd)
+                .then(function () {
+                  App.toast('Pengajuan reimburse terkirim, menunggu persetujuan.', 'success');
+                  el.closeModal();
+                  loadReimburses();
+                })
+                .catch(function (err) {
+                  App.toast(err.message, 'error');
+                  return false;
+                });
+
+              // false = modal tidak menutup otomatis sampai server menjawab.
+              return false;
+            },
+          },
+        ],
+      });
+    });
   }
 
   // --------------------------------------------------------- Rekap kehadiran

@@ -35,9 +35,21 @@ test('countQuotaDays satu hari kerja bernilai satu', () => {
   assert.equal(countQuotaDays(SENIN_KE_JUMAT, '2026-03-02', '2026-03-02'), 1);
 });
 
-test('countQuotaDays tanpa daftar hari kerja menghitung semua hari', () => {
-  // Tanpa shift, semua hari dalam rentang dihitung sebagai hari kerja.
-  assert.equal(countQuotaDays(null, '2026-03-06', '2026-03-08'), 3);
+test('countQuotaDays tanpa daftar hari kerja menghitung semua hari kecuali Minggu', () => {
+  // Tanpa shift, semua hari dalam rentang dianggap hari kerja. Tapi Minggu
+  // (2026-03-08) tidak pernah dihitung, sehingga 06-08 = Jumat + Sabtu = 2.
+  assert.equal(countQuotaDays(null, '2026-03-06', '2026-03-08'), 2);
+  // Rentang yang seluruhnya Minggu tidak memotong jatah sama sekali.
+  assert.equal(countQuotaDays(null, '2026-03-08', '2026-03-08'), 0);
+  assert.equal(countQuotaDays(SENIN_KE_JUMAT, '2026-03-08', '2026-03-08'), 0);
+});
+
+test('countQuotaDays mengabaikan work_days lama yang memuat Minggu', () => {
+  // Instalasi lama bisa punya work_days "1,2,3,4,5,7"; Minggu di dalamnya
+  // harus tetap diabaikan supaya jatah cuti tidak berkurang karena Minggu.
+  const lamaDenganMinggu = '1,2,3,4,5,7';
+  assert.equal(countQuotaDays(lamaDenganMinggu, '2026-03-06', '2026-03-08'), 1);
+  assert.equal(countQuotaDays(lamaDenganMinggu, '2026-03-02', '2026-03-08'), 5);
 });
 
 test('countQuotaDays menghormati shift 6 hari kerja', () => {
@@ -56,7 +68,6 @@ test('usesQuota hanya berlaku untuk cuti tahunan', () => {
 
 test('jenis cuti lain tidak memakai jatah tahunan', () => {
   for (const subtype of [
-    'cuti_sakit',
     'cuti_melahirkan',
     'cuti_menikah',
     'cuti_haji',
@@ -91,7 +102,21 @@ test('usesQuota aman untuk input kosong', () => {
 
 test('katalog tetap memetakan cuti tahunan ke status cuti', () => {
   assert.equal(leaveCatalog.statusForLeave('cuti', 'cuti_tahunan'), 'cuti');
-  assert.equal(leaveCatalog.statusForLeave('cuti', 'cuti_sakit'), 'sakit');
+});
+
+test('katalog tidak lagi punya sub-jenis sakit', () => {
+  // Kondisi sakit diinput sebagai izin biasa, jadi tidak ada jalur yang
+  // menghasilkan status 'sakit' lagi.
+  assert.equal(leaveCatalog.findSubtype('cuti_sakit'), null);
+  assert.equal(leaveCatalog.findSubtype('izin_sakit'), null);
+  assert.equal(leaveCatalog.LEAVE_TYPES.includes('sakit'), false);
+});
+
+test('leave_type sakit lama dipetakan ke status izin', () => {
+  // Pengajuan yang sudah tersimpan sebelum sub-jenis dihapus harus tetap
+  // terbaca sebagai izin, bukan status 'sakit' yang tak terpakai lagi.
+  assert.equal(leaveCatalog.statusForLeave('sakit', null), 'izin');
+  assert.equal(leaveCatalog.statusForLeave('cuti', 'cuti_sakit'), 'izin');
 });
 
 test('countQuotaDays mengikuti work_days dari shift karyawan', () => {

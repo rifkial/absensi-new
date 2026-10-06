@@ -52,7 +52,7 @@ const PROFILES = [
 // pending = true -> pengajuan menunggu persetujuan di halaman admin.
 const LEAVES = [
   { employee: 1, subtype: 'izin_kebutuhan_pribadi', start: '2026-09-03', end: '2026-09-03', reason: 'Keperluan pribadi', approved: true },
-  { employee: 2, subtype: 'izin_sakit', start: '2026-09-10', end: '2026-09-11', reason: 'Demam dan flu', approved: true },
+  { employee: 2, subtype: 'izin_tidak_masuk', start: '2026-09-10', end: '2026-09-11', reason: 'Sakit (demam dan flu), diinput sebagai izin', approved: true },
   { employee: 3, subtype: 'cuti_tahunan', start: '2026-09-17', end: '2026-09-18', reason: 'Cuti tahunan', approved: true },
   { employee: 4, subtype: 'dinas_luar_kota', start: '2026-09-24', end: '2026-09-25', place: 'Bandung, Jawa Barat', reason: 'Pelatihan regional', approved: true },
   { employee: 5, subtype: 'izin_keluarga', start: '2026-09-29', end: '2026-09-29', reason: 'Mengurus keluarga', approved: true },
