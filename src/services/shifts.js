@@ -197,6 +197,16 @@ function isWorkingDay(shift, date) {
   return isWorkDay(shift.work_days, date);
 }
 
+/**
+ * Shift lintas tengah malam (jam selesai <= jam mulai, mis. 23:00-07:00).
+ * Pulang tercatat di tanggal berikutnya, jadi rekap harus menarik log
+ * keesokan paginya ke tanggal mulai shift.
+ */
+function isOvernight(shift) {
+  if (!shift || !shift.start_time || !shift.end_time) return false;
+  return timeToMinutes(shift.end_time, 0) <= timeToMinutes(shift.start_time, 0);
+}
+
 /** Durasi kerja efektif shift dalam menit, dikurangi waktu istirahat. */
 function shiftDurationMinutes(shift) {
   if (!shift) return 0;
@@ -257,6 +267,7 @@ module.exports = {
   remove,
   normalize,
   isWorkingDay,
+  isOvernight,
   shiftDurationMinutes,
   toleranceOf,
   maxWorkMinutesOf,

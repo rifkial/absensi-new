@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 
 const {
   isWorkingDay,
+  isOvernight,
   toleranceOf,
   shiftDurationMinutes,
   maxWorkMinutesOf,
@@ -87,4 +88,12 @@ test('maxWorkMinutesOf memakai nilai shift bila ada', () => {
 
 test('maxWorkMinutesOf jatuh ke default bila kosong', () => {
   assert.equal(maxWorkMinutesOf(null), maxWorkMinutesOf({ max_work_minutes: null }));
+});
+
+test('isOvernight mendeteksi shift malam lintas hari', () => {
+  assert.equal(isOvernight({ start_time: '23:00:00', end_time: '07:00:00' }), true);
+  assert.equal(isOvernight({ start_time: '22:00:00', end_time: '06:00:00' }), true);
+  assert.equal(isOvernight({ start_time: '07:00:00', end_time: '15:00:00' }), false);
+  assert.equal(isOvernight({ start_time: '15:00:00', end_time: '23:00:00' }), false);
+  assert.equal(isOvernight(null), false);
 });

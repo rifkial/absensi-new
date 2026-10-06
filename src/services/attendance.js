@@ -94,8 +94,23 @@ const STATUS_LABEL = {
 /**
  * Ambil log mentah seorang karyawan pada satu tanggal.
  * Log urut berdasarkan waktu agar ritik masuk/keluar bisa ditentukan.
+ * Shift malam (23:00-07:00): pulang tercatat besok pagi, jadi log sebelum
+ * jam selesai shift keesokan harinya ikut ditarik ke tanggal mulai shift.
  */
-async function getLogsFor(employeeId, workDate) {
+async function getLogsFor(employeeId, workDate, shift = null) {
+  if (shiftsService.isOvernight(shift)) {
+    const endMin = timeToMinutes(shift.end_time, 0);
+    const endStr = minutesToTime(endMin);
+    const nextDate = addDays(workDate, 1);
+    return db.queryAll(
+      `SELECT id, log_time, log_state, verify_mode, work_code, source, device_id
+         FROM attendance_logs
+        WHERE employee_id = ?
+          AND (log_date = ? OR (log_date = ? AND TIME(log_time) <= ?))
+        ORDER BY log_time ASC, id ASC`,
+      [employeeId, workDate, nextDate, endStr]
+    );
+  }
   return db.queryAll(
     `SELECT id, log_time, log_state, verify_mode, work_code, source, device_id
        FROM attendance_logs
@@ -222,10 +237,14 @@ function computeDaily({
     return result;
   }
 
-  // 2) Absen dinas luar kota (bukan scan fingerprint, tapi GPS + selfie).
+  // 2) Absen dinas (dalam/luar kota, bukan scan fingerprint tapi GPS + selfie).
   //    Diprioritaskan sebelum leave karena tugas lapangan tetap dihitung kerja.
+  //    Jenis dinas diambil dari pengajuan (dinas_dalam vs dinas_luar) supaya
+  //    label status sesuai persetujuan, bukan selalu luar kota.
   if (duty) {
-    result.status = STATUS.DINAS_LUAR;
+    const dutyStatus = leave && leave.leave_type === 'dinas_dalam' ? STATUS.DINAS_DALAM : STATUS.DINAS_LUAR;
+    const dutyLabel = dutyStatus === STATUS.DINAS_DALAM ? 'Dinas dalam kota' : 'Dinas luar kota';
+    result.status = dutyStatus;
     result.firstIn = duty.check_in_at;
     result.firstOut = duty.check_out_at;
     result.dutyId = duty.id;
@@ -233,23 +252,25 @@ function computeDaily({
 
     // Durasi kerja dihitung dari jam portal; patokan shift dipakai bila shift
     // tersedia sehingga lembur tetap terukur seperti karyawan kantor.
-    if (duty.check_in_at && (duty.check_out_at || logs.length > 0)) {
-      const outAt = duty.check_out_at || lastOutTime(logs) || duty.check_in_at;
+    // Belum check-out: first_out tetap NULL (tampil "-"), durasi dihitung
+    // sampai sekarang supaya Hari Ini tidak 0.00 jam.
+    if (duty.check_in_at && (duty.check_out_at || logs.length > 0 || workDate === today())) {
+      const outAt =
+        duty.check_out_at ||
+        lastOutTime(logs) ||
+        (workDate === today()
+          ? formatDateTime(new Date())
+          : duty.check_in_at);
       result.workMinutes = Math.max(0, minutesBetween(outAt, duty.check_in_at));
-      if (shift && shift.break_start && shift.break_end) {
-        result.workMinutes = Math.max(0, result.workMinutes - breakDuration(shift, duty.check_in_at, outAt));
-      }
-      const maxWork = shiftsService.maxWorkMinutesOf(shift);
-      const fullDay = shift ? shiftsService.shiftDurationMinutes(shift) : 0;
-      const basis = fullDay > 0 ? fullDay : maxWork;
+      const basis = shift ? grossShiftMinutes(shift) : shiftsService.maxWorkMinutesOf(shift);
       if (basis > 0 && result.workMinutes > basis) {
         result.overtimeMinutes = result.workMinutes - basis;
       }
     }
 
     result.note = duty.note
-      ? `Dinas luar kota. ${duty.note}`
-      : 'Dinas luar kota (absen via GPS + selfie).';
+      ? `${dutyLabel}. ${duty.note}`
+      : `${dutyLabel} (absen via GPS + selfie).`;
     return result;
   }
 
@@ -315,8 +336,9 @@ function computeDaily({
     const scheduledStart = timeToMinutes(shift.start_time, 0);
     const actualIn = timeToMinutes(String(formatDateTime(result.firstIn)).slice(11, 16), 0);
 
-    // Shift lintas tengah malam: kalau scan masuk sebelum jam shift, itu
-    // sebenarnya scan untuk shift hari sebelumnya.
+    // Telat = scan masuk melewati jam mulai + toleransi shift.
+    // Shift malam (23:00-07:00): scan 23:20 dengan toleransi 15 = telat 20 menit.
+    // Scan masuk sebelum jam mulai (mis. 22:40) = datang awal, bukan telat.
     const late = actualIn - scheduledStart;
     result.lateMinutes = late > tolerance ? late : 0;
     result.status = result.lateMinutes > 0 ? STATUS.TELAT : STATUS.HADIR;
@@ -385,20 +407,13 @@ function applyScans(result, logs, shift) {
   }
 
   if (result.firstIn && result.firstOut) {
-    const total = minutesBetween(result.firstOut, result.firstIn);
-
-    // Kurangi waktu istirahat shift.
-    let effective = total;
-    if (shift && shift.break_start && shift.break_end) {
-      effective -= breakDuration(shift, result.firstIn, result.firstOut);
-    }
-    result.workMinutes = Math.max(0, effective);
+    // Durasi kerja = jam pulang - jam masuk (gross, tanpa potong istirahat).
+    result.workMinutes = minutesBetween(result.firstOut, result.firstIn);
 
     if (shift) {
       const maxWork = shiftsService.maxWorkMinutesOf(shift);
-      const fullDay = shiftsService.shiftDurationMinutes(shift);
-      const basis = fullDay > 0 ? fullDay : maxWork;
-      if (result.workMinutes > basis) {
+      const basis = grossShiftMinutes(shift) || maxWork;
+      if (basis > 0 && result.workMinutes > basis) {
         result.overtimeMinutes = result.workMinutes - basis;
       }
 
@@ -431,11 +446,17 @@ function lastOutTime(logs) {
   return formatDateTime(outs[outs.length - 1].log_time);
 }
 
-function breakDuration(shift, firstIn, firstOut) {
-  const breakStart = timeToMinutes(shift.break_start, 0);
-  const breakEnd = timeToMinutes(shift.break_end, 0);
-  if (breakEnd <= breakStart) return breakEnd - breakStart + 1440;
-  return breakEnd - breakStart;
+/**
+ * Panjang shift kotor (jam pulang - jam masuk jadwal) tanpa potong istirahat.
+ * Dipakai sebagai batas lembur supaya durasi gross konsisten dengan jam portal.
+ */
+function grossShiftMinutes(shift) {
+  if (!shift) return 0;
+  const start = timeToMinutes(shift.start_time, 0);
+  const end = timeToMinutes(shift.end_time, 0);
+  let total = end - start;
+  if (total <= 0) total += 1440;
+  return Math.max(0, total);
 }
 
 function minutesBetween(later, earlier) {
@@ -537,7 +558,7 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
 
     for (const workDate of dates) {
       const resolved = await getResolvedCached(employee.id, workDate, shiftCache);
-      const logs = await getLogsCached(employee.id, workDate, logsCache);
+      const logs = await getLogsCached(employee.id, workDate, logsCache, resolved.shift);
       const leave = await getLeaveCached(employee.id, workDate, leaveCache);
       const duty = await getDutyCached(employee.id, workDate, dutyCache);
 
@@ -607,10 +628,11 @@ async function getResolvedCached(employeeId, workDate, cache) {
   return cache.get(key);
 }
 
-async function getLogsCached(employeeId, workDate, cache) {
-  const key = `${employeeId}:${workDate}`;
+async function getLogsCached(employeeId, workDate, cache, shift = null) {
+  const overnight = shiftsService.isOvernight(shift) ? ':n' : '';
+  const key = `${employeeId}:${workDate}${overnight}`;
   if (cache.has(key)) return cache.get(key);
-  const logs = await getLogsFor(employeeId, workDate);
+  const logs = await getLogsFor(employeeId, workDate, shift);
   cache.set(key, logs);
   return logs;
 }
@@ -627,7 +649,8 @@ async function getLeaveCached(employeeId, workDate, cache) {
 async function getDutyCheckin(employeeId, workDate) {
   return db.queryOne(
     `SELECT id, employee_id, work_date, check_in_at, check_out_at,
-            latitude, longitude, accuracy_m, address, selfie_path, note, leave_id
+            latitude, longitude, accuracy_m, address, selfie_path,
+            checkout_selfie_path, note, leave_id
        FROM duty_checkins
       WHERE employee_id = ? AND work_date = ?`,
     [employeeId, workDate]
@@ -767,6 +790,11 @@ async function getOne(employeeId, workDate) {
     [employeeId, date]
   );
 
+  // URL foto dinas untuk admin (disajikan lewat endpoint attendance berizin).
+  if (duty) {
+    duty.selfie_url = duty.selfie_path ? `/api/attendance/duty/${duty.id}/selfie` : null;
+    duty.selfie_out_url = duty.checkout_selfie_path ? `/api/attendance/duty/${duty.id}/selfie-out` : null;
+  }
   return {
     daily: daily || null,
     duty: duty || null,
@@ -978,6 +1006,7 @@ module.exports = {
   getGlobalShift,
   invalidateGlobalShift,
   getDutyCheckin,
+  grossShiftMinutes,
   minutesToTime,
   isoDayOfWeek,
 };

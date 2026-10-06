@@ -17,22 +17,10 @@
 
   var state = {
     format: 'rekap_kehadiran',
-    // toISOString() memakai UTC sehingga tanggal bisa bergeser 1 hari di WIB.
-    from: (function () {
-      var d = new Date();
-      d.setDate(d.getDate() - 30);
-      return App.today(d);
-    })(),
-    to: (function () {
-      var d = new Date();
-      d.setDate(0);
-      return App.today(d);
-    })(),
-    month: (function () {
-      var d = new Date();
-      d.setDate(0);
-      return App.today(d).slice(0, 7);
-    })(),
+    // Default bulan berjalan (1 s/d hari ini) supaya dinas hari ini langsung masuk.
+    from: App.startOfMonth(),
+    to: App.today(),
+    month: App.today().slice(0, 7),
     department_id: '',
     employee_id: '',
     status: '',
@@ -110,7 +98,7 @@
             '<div class="field" id="wrapMonth"><label for="rpMonth">Bulan</label><input type="month" id="rpMonth" value="' + esc(state.month) + '"></div>' +
             '<div class="field"><label for="rpDept">Unit Kerja</label><select id="rpDept"><option value="">Semua</option></select></div>' +
             '<div class="field"><label for="rpStatus">Status</label><select id="rpStatus"><option value="">Semua</option>' +
-['hadir', 'telat', 'dinas_luar', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'].map(function (s) {
+['hadir', 'telat', 'dinas_luar', 'dinas_dalam', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'].map(function (s) {
     return '<option value="' + s + '">' + esc(App.STATUS_LABELS[s] || s) + '</option>';
               }).join('') +
             '</select></div>' +
@@ -255,6 +243,7 @@
         { key: 'total_izin', label: 'Total Izin', align: 'right' },
         { key: 'total_cuti', label: 'Total Cuti', align: 'right' },
         { key: 'total_dinas_luar', label: 'Total Dinas Luar', align: 'right' },
+        { key: 'total_dinas_dalam', label: 'Total Dinas Dalam', align: 'right' },
         { key: 'total_hari_terlambat', label: 'Total Hari Terlambat', align: 'right' },
         { key: 'total_lembur_jam', label: 'Total Lemburan (jam)', align: 'right' },
       ];
@@ -283,6 +272,7 @@
         { key: 'total_sakit', label: 'Sakit', align: 'right' },
         { key: 'total_cuti', label: 'Cuti', align: 'right' },
         { key: 'total_dinas_luar', label: 'Dinas Luar', align: 'right' },
+        { key: 'total_dinas_dalam', label: 'Dinas Dalam', align: 'right' },
         { key: 'total_alpa', label: 'Alpa', align: 'right' },
         { key: 'persen_hadir', label: '% Kehadiran', align: 'right', render: function (r) { return App.formatNumber(r.persen_hadir) + '%'; } },
         { key: 'total_late_minutes', label: 'Total Telat', align: 'right', render: function (r) { return App.fmtMinutes(r.total_late_minutes); } },
@@ -300,6 +290,7 @@
         { key: 'izin', label: 'Izin', align: 'right' },
         { key: 'sakit', label: 'Sakit', align: 'right' },
         { key: 'dinas_luar', label: 'Dinas Luar', align: 'right' },
+        { key: 'dinas_dalam', label: 'Dinas Dalam', align: 'right' },
         { key: 'alpa', label: 'Alpa', align: 'right' },
         { key: 'persen_hadir', label: '% Kehadiran', align: 'right', render: function (r) {
           return App.formatNumber(r.persen_hadir) + '%';
@@ -338,6 +329,7 @@
         { key: 'sakit', label: 'Sakit', align: 'right', render: function (r) { return App.formatNumber(r.sakit); } },
         { key: 'cuti', label: 'Cuti', align: 'right', render: function (r) { return App.formatNumber(r.cuti); } },
         { key: 'dinas_luar', label: 'Dinas Luar', align: 'right', render: function (r) { return App.formatNumber(r.dinas_luar); } },
+        { key: 'dinas_dalam', label: 'Dinas Dalam', align: 'right', render: function (r) { return App.formatNumber(r.dinas_dalam); } },
         { key: 'alpa', label: 'Alpa', align: 'right', render: function (r) { return App.formatNumber(r.alpa); } },
         { key: 'hari_libur', label: 'Libur', align: 'right', render: function (r) { return App.formatNumber(r.hari_libur); } },
         { key: 'total', label: 'Total', align: 'right', render: function (r) { return App.formatNumber(r.total); } },

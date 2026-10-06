@@ -35,6 +35,7 @@
 belum: 'Belum Absen',
     hari_libur: 'Hari Libur',
     dinas_luar: 'Dinas Luar Kota',
+    dinas_dalam: 'Dinas Dalam Kota',
   };
 
   var LOG_STATE_LABELS = {
@@ -63,6 +64,7 @@ belum: 'Belum Absen',
     cuti: 'Cuti',
     izin_meninggal: 'Izin Meninggal',
     dinas_luar: 'Dinas Luar Kota',
+    dinas_dalam: 'Dinas Dalam Kota',
   };
 
   var LEAVE_STATUS_LABELS = {
@@ -185,6 +187,42 @@ belum: 'Belum Absen',
     var n = Number(value);
     if (!isFinite(n)) return '0';
     return n.toLocaleString('id-ID');
+  }
+
+  /** Angka polos -> "1.500.000". Untuk input currency. */
+  function formatRupiahInput(value) {
+    var digits = String(value == null ? '' : value).replace(/\D/g, '').replace(/^0+(?=\d)/, '');
+    if (!digits) return '';
+    return Number(digits).toLocaleString('id-ID');
+  }
+
+  /** "Rp 1.500.000" / "1.500.000" -> 1500000. */
+  function parseRupiahInput(value) {
+    var digits = String(value == null ? '' : value).replace(/\D/g, '');
+    if (!digits) return 0;
+    return Number(digits);
+  }
+
+  /**
+   * Pasang format ribuan otomatis pada input teks.
+   * Ketik 1500000 -> tampil 1.500.000, nilai asli via parseRupiahInput().
+   */
+  function bindRupiahInput(input) {
+    if (!input || input._rupiahBound) return;
+    input._rupiahBound = true;
+    input.setAttribute('inputmode', 'numeric');
+    input.addEventListener('input', function () {
+      var pos = input.selectionStart;
+      var before = input.value.length;
+      input.value = formatRupiahInput(input.value);
+      var diff = input.value.length - before;
+      try {
+        input.setSelectionRange(Math.max(0, pos + diff), Math.max(0, pos + diff));
+      } catch (e) {}
+    });
+    input.addEventListener('blur', function () {
+      input.value = formatRupiahInput(input.value);
+    });
   }
 
   function formatMinutes(total) {
@@ -442,7 +480,7 @@ belum: 'Belum Absen',
    * @param {Object} opts
    *   title     - judul
    *   bodyHtml  - isi (string HTML)
-   *   size      - '' | 'wide'
+   *   size      - '' | 'wide' | 'large'
    *   actions   - [{ label, className, value, primary }]
    *   onAction  - function(value, modalEl) -> true untuk tutup otomatis
    *   onMount   - function(modalEl) setelah masuk DOM
@@ -462,7 +500,7 @@ belum: 'Belum Absen',
     }
 
     backdrop.innerHTML =
-      '<div class="modal ' + (o.size === 'wide' ? 'wide' : '') + '" role="dialog" aria-modal="true">' +
+      '<div class="modal ' + (o.size === 'large' ? 'large' : o.size === 'wide' ? 'wide' : '') + '" role="dialog" aria-modal="true">' +
         '<div class="modal-header">' +
           '<h3 class="modal-title">' + escapeHtml(o.title || '') + '</h3>' +
           '<button type="button" class="close-x" data-close aria-label="Tutup">&times;</button>' +
@@ -615,7 +653,7 @@ belum: 'Belum Absen',
       return '<div class="empty-state">Belum ada data untuk ditampilkan.</div>';
     }
 
-    var keys = series || ['hadir', 'telat', 'izin', 'sakit', 'alpa', 'belum'];
+    var keys = series || ['hadir', 'telat', 'dinas_luar', 'dinas_dalam', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'];
     var totals = list.map(function (item) {
       return keys.reduce(function (sum, k) { return sum + (Number(item.values[k]) || 0); }, 0);
     });
@@ -653,6 +691,7 @@ belum: 'Belum Absen',
     hadir: '#22a06b',
     telat: '#e0a020',
     dinas_luar: '#65a30d',
+    dinas_dalam: '#ca8a04',
     izin: '#3b9ddb',
     sakit: '#8b5cf6',
     cuti: '#94a3b8',
@@ -688,6 +727,9 @@ belum: 'Belum Absen',
     fmtDateTime: formatDateTime,
     fmtNumber: formatNumber,
     formatNumber: formatNumber,
+    fmtRupiah: formatRupiahInput,
+    parseRupiah: parseRupiahInput,
+    bindRupiah: bindRupiahInput,
     fmtMinutes: formatMinutes,
     fmtBytes: formatBytes,
     fmtRelative: formatRelative,

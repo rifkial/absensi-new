@@ -86,9 +86,11 @@
         return (Date.now() - new Date(String(d.last_sync_at).replace(' ', 'T')).getTime()) > 2 * 3600 * 1000;
       });
 
+      var dinasToday = (Number(todayStatus.dinas_luar) || 0) + (Number(todayStatus.dinas_dalam) || 0);
+
       root.querySelector('#dashBody').innerHTML =
         '<div class="stat-grid">' +
-          statCard('success', 'Hadir Hari Ini', App.formatNumber((todayStatus.hadir || 0) + (todayStatus.dinas_luar || 0)), 'dari ' + App.formatNumber(emp.aktif || 0) + ' karyawan, termasuk dinas luar ' + App.formatNumber(todayStatus.dinas_luar || 0)) +
+          statCard('success', 'Hadir Hari Ini', App.formatNumber((todayStatus.hadir || 0) + dinasToday), 'dari ' + App.formatNumber(emp.aktif || 0) + ' karyawan, termasuk dinas ' + App.formatNumber(dinasToday) + ' (luar ' + App.formatNumber(todayStatus.dinas_luar || 0) + ', dalam ' + App.formatNumber(todayStatus.dinas_dalam || 0) + ')') +
           statCard('warning', 'Telat Hari Ini', App.formatNumber(todayStatus.telat || 0), 'keterlambatan masuk kerja') +
           statCard('info', 'Izin / Sakit', App.formatNumber((todayStatus.izin || 0) + (todayStatus.sakit || 0)), 'izin ' + App.formatNumber(todayStatus.izin || 0) + ', sakit ' + App.formatNumber(todayStatus.sakit || 0)) +
           statCard('danger', 'Alpa Hari Ini', App.formatNumber(todayStatus.alpa || 0), 'tidak hadir tanpa keterangan') +
@@ -220,7 +222,7 @@
     }
 
     function buildPeriodRows(s) {
-      var order = ['hadir', 'telat', 'dinas_luar', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'];
+      var order = ['hadir', 'telat', 'dinas_luar', 'dinas_dalam', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'];
       var out = [];
       var totalAll = order.reduce(function (sum, k) { return sum + (Number(s[k]) || 0); }, 0);
 

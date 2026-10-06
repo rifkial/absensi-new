@@ -391,7 +391,7 @@
   function openDetail(employeeId, date) {
     App.modal({
       title: 'Detail Absensi Harian',
-      size: 'wide',
+      size: 'large',
       bodyHtml: '<div id="attDetail">' + App.loading('Memuat...') + '</div>',
       actions: [{ label: 'Tutup' }],
       onMount: function (el) {
@@ -403,6 +403,7 @@
           var emp = res[0].data;
           var daily = res[1].daily || res[1].data || null;
           var logs = res[1].logs || [];
+          var duty = res[1].duty || null;
           var shift = res[1].shift || null;
           var holiday = res[1].holiday || null;
 
@@ -431,6 +432,20 @@
                   : '<div class="callout warning">Rekap belum dihitung untuk tanggal ini. Klik "Hitung Ulang Rekap".</div>') +
               '</div>' +
               '<div>' +
+                (duty
+                  ? '<h4 style="margin:0 0 8px">Dinas (GPS + Selfie)</h4>' +
+                    '<div class="callout">Check-in ' + esc(App.fmtTime(duty.check_in_at)) + ' - ' +
+                    'Check-out ' + esc(duty.check_out_at ? App.fmtTime(duty.check_out_at) : '-') + '. ' +
+                    (duty.selfie_url
+                      ? '<button class="btn sm" data-duty-selfie="' + esc(duty.selfie_url) + '">Foto In</button> '
+                      : '<span class="faint">(tanpa foto in)</span> ') +
+                    (duty.check_out_at
+                      ? (duty.selfie_out_url
+                        ? '<button class="btn sm" data-duty-selfie="' + esc(duty.selfie_out_url) + '">Foto Out</button>'
+                        : '<span class="faint">(tanpa foto out)</span>')
+                      : '<span class="faint">(belum check-out)</span>') +
+                    '</div>'
+                  : '') +
                 '<h4 style="margin:0 0 8px">Scan pada Tanggal Ini</h4>' +
                 App.table([
                   { key: 'log_time', label: 'Waktu', render: function (r) { return esc(App.fmtTime(r.log_time)); } },
@@ -453,6 +468,27 @@
                   '</div>' : '') +
               '</div>' +
             '</div>';
+
+          Array.prototype.forEach.call(target.querySelectorAll('[data-duty-selfie]'), function (btn) {
+            btn.addEventListener('click', function () {
+              var url = btn.getAttribute('data-duty-selfie');
+              fetch(url, { headers: { Authorization: 'Bearer ' + api.token } })
+                .then(function (r) {
+                  if (!r.ok) throw new Error('Foto tidak dapat dimuat (' + r.status + ').');
+                  return r.blob();
+                })
+                .then(function (blob) {
+                  var objectUrl = URL.createObjectURL(blob);
+                  App.modal({
+                    title: 'Foto Selfie Dinas',
+                    bodyHtml: '<img src="' + objectUrl + '" alt="Selfie dinas" style="width:100%;border-radius:8px">',
+                    actions: [{ label: 'Tutup' }],
+                    onClose: function () { URL.revokeObjectURL(objectUrl); },
+                  });
+                })
+                .catch(function (e) { App.toast(e.message, 'error'); });
+            });
+          });
         }).catch(function (err) {
           target.innerHTML = '<div class="empty-state"><div class="big">&#9888;</div><div>' + esc(err.message) + '</div></div>';
         });

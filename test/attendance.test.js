@@ -106,27 +106,28 @@ test('scan lewat toleransi dihitung telat sebesar menit keterlambatan', () => {
   assert.equal(result.lateMinutes, 25);
 });
 
-test('durasi kerja dikurangi waktu istirahat', () => {
+test('durasi kerja = jam pulang - jam masuk (gross)', () => {
   const d = workdayPast();
-  // 08:00-17:00 = 540 menit, istirahat 12:00-13:00 = 60 menit.
+  // 08:00-17:00 = 540 menit, istirahat tidak dipotong.
   const result = computeDaily(base({
     workDate: d,
     logs: scans(d, ['08:00', '17:00'], [0, 1]),
   }));
 
-  assert.equal(result.workMinutes, 480);
+  assert.equal(result.workMinutes, 540);
+  assert.equal(result.overtimeMinutes, 0);
 });
 
 test('lembur dihitung ketika kerja melewati batas shift', () => {
   const d = workdayPast();
-  // 08:00-19:00 = 660 menit, dikurangi istirahat 60 = 600.
-  // Batas lembur = max_work_minutes 480 -> lembur 120 menit.
+  // 08:00-19:00 = 660 menit gross.
+  // Batas lembur = panjang shift gross 540 -> lembur 120 menit.
   const result = computeDaily(base({
     workDate: d,
     logs: scans(d, ['08:00', '19:00'], [0, 1]),
   }));
 
-  assert.equal(result.workMinutes, 600);
+  assert.equal(result.workMinutes, 660);
   assert.equal(result.overtimeMinutes, 120);
 });
 
@@ -233,11 +234,40 @@ test('dinas luar tetap dihitung kerja walau tanpa scan mesin', () => {
   const result = computeDaily(base({
     workDate: d,
     logs: [],
+    leave: { leave_type: 'dinas_luar', subtype: 'dinas_luar_kota', start_date: d, end_date: d },
     duty: { check_in_at: `${d} 08:00:00`, check_out_at: `${d} 17:00:00`, note: 'Tugas' },
   }));
 
   assert.equal(result.status, STATUS.DINAS_LUAR);
-  assert.equal(result.workMinutes, 480);
+  assert.equal(result.workMinutes, 540);
+});
+
+test('dinas dalam kota pakai status dinas_dalam', () => {
+  const d = workdayPast();
+  const result = computeDaily(base({
+    workDate: d,
+    logs: [],
+    leave: { leave_type: 'dinas_dalam', subtype: 'dinas_dalam_kota', start_date: d, end_date: d },
+    duty: { check_in_at: `${d} 08:00:00`, check_out_at: `${d} 17:00:00`, note: 'Tugas' },
+  }));
+
+  assert.equal(result.status, STATUS.DINAS_DALAM);
+  assert.equal(result.workMinutes, 540);
+});
+
+test('dinas hari ini tanpa check-out hitung sampai sekarang', () => {
+  const d = today();
+  const result = computeDaily(base({
+    workDate: d,
+    logs: [],
+    leave: { leave_type: 'dinas_luar', subtype: 'dinas_luar_kota', start_date: d, end_date: d },
+    duty: { check_in_at: `${d} 08:00:00`, check_out_at: null, note: 'Tugas' },
+    now: new Date(`${d}T10:00:00`),
+  }));
+
+  assert.equal(result.status, STATUS.DINAS_LUAR);
+  assert.ok(result.workMinutes > 0, `workMinutes=${result.workMinutes}`);
+  assert.equal(result.firstOut, null);
 });
 
 test('dinas lebih didahulukan daripada pengajuan cuti', () => {
@@ -277,6 +307,14 @@ test('izin setengah hari tetap menghitung jam kerja dari scan', () => {
   }));
 
   assert.equal(result.status, STATUS.IZIN);
-  // 08:00-12:00 = 240 menit, dikurangi istirahat shift 12:00-13:00 = 60 menit.
-  assert.equal(result.workMinutes, 180);
+  // 08:00-12:00 = 240 menit, tidak overlap istirahat 12:00-13:00 = tetap 240.
+  assert.equal(result.workMinutes, 240);
+});
+
+test('durasi gross tanpa potong istirahat', () => {
+  const d = workdayPast();
+  const full = computeDaily(base({ workDate: d, logs: scans(d, ['08:00', '17:00'], [0, 1]) }));
+  assert.equal(full.workMinutes, 540);
+  const partial = computeDaily(base({ workDate: d, logs: scans(d, ['08:00', '12:30'], [0, 1]) }));
+  assert.equal(partial.workMinutes, 270);
 });

@@ -12,6 +12,7 @@ const attendance = require('../services/attendance');
 const leaveCatalog = require('../services/leaveCatalog');
 const leaveQuota = require('../services/leaveQuota');
 const audit = require('../services/audit');
+const realtime = require('../services/realtime');
 const { parseCsv, detectDelimiter } = require('../devices/csv/adapter');
 const { toDate } = require('../utils/date');
 
@@ -228,7 +229,8 @@ router.get(
     }
 
     const rows = await db.queryAll(
-      `SELECT sc.*, s.code AS shift_code, s.name AS shift_name
+      `SELECT sc.*, s.code AS shift_code, s.name AS shift_name,
+              s.start_time, s.end_time, s.late_tolerance_min
          FROM schedules sc
          LEFT JOIN shifts s ON s.id = sc.shift_id
         WHERE ${where.join(' AND ')}
@@ -398,6 +400,17 @@ router.post(
       });
     }
 
+    // Notif realtime ke admin/HR bila dinas; ke karyawan bila langsung approved.
+    try {
+      const emp = await employees.getOrFail(employeeId);
+      await realtime.onLeaveSubmitted(row, emp.name);
+      if (row.status === 'approved') {
+        await realtime.onLeaveReviewed(row, req.user.full_name || req.user.username, 'approved');
+      }
+    } catch {
+      // notif gagal tidak boleh menggagalkan simpan pengajuan
+    }
+
     res.status(201).json({ ok: true, data: decorateLeave(row) });
   })
 );
@@ -486,6 +499,17 @@ router.put(
         employeeId: row.employee_id,
         force: true,
       });
+    }
+
+    // Notif realtime hasil review ke karyawan pengaju (khusus dinas).
+    try {
+      await realtime.onLeaveReviewed(
+        row,
+        req.user.full_name || req.user.username,
+        decision
+      );
+    } catch {
+      // abaikan
     }
 
     res.json({ ok: true, data: row });
@@ -672,8 +696,303 @@ function decorateReimburse(row) {
     ...row,
     status_label: statusLabel(row.status),
     reviewer: row.reviewer_full_name || row.reviewer_name || null,
+    receipt_url: row.attachment ? `/api/employees/reimburses/${row.id}/receipt` : null,
   };
 }
+
+/** Ambil riwayat mentah (tanpa dekorasi label) untuk ekspor. */
+async function fetchLeaveHistory(query = {}) {
+  const { where, params } = leaveHistoryFilter(query);
+  const limit = Math.min(2000, Math.max(1, Number(query.limit) || 1000));
+  return db.queryAll(
+    `SELECT lr.*, e.name AS employee_name, e.employee_code,
+            u.username AS reviewer_name, u.full_name AS reviewer_full_name
+       FROM leave_requests lr
+       JOIN employees e ON e.id = lr.employee_id
+       LEFT JOIN app_users u ON u.id = lr.reviewed_by
+      ${where}
+      ORDER BY lr.created_at DESC, lr.id DESC
+      LIMIT ${limit}`,
+    params
+  );
+}
+
+async function fetchReimburseHistory(query = {}) {
+  const where = [];
+  const params = [];
+  const status = query.status ? String(query.status).trim() : '';
+  if (status && status !== 'all') {
+    const list = status.split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length > 0) {
+      where.push(`r.status IN (${list.map(() => '?').join(', ')})`);
+      params.push(...list);
+    }
+  }
+  const limit = Math.min(2000, Math.max(1, Number(query.limit) || 1000));
+  return db.queryAll(
+    `SELECT r.*, e.name AS employee_name, e.employee_code,
+            u.username AS reviewer_name, u.full_name AS reviewer_full_name
+       FROM reimburses r
+       JOIN employees e ON e.id = r.employee_id
+       LEFT JOIN app_users u ON u.id = r.reviewed_by
+      ${where.length > 0 ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY r.created_at DESC, r.id DESC
+      LIMIT ${limit}`,
+    params
+  );
+}
+
+/** Ekspor riwayat pengajuan (cuti/izin/dinas + reimburse) ke Excel. */
+router.get(
+  '/history/export/excel',
+  auth.requirePermission('reports:export'),
+  wrap(async (req, res) => {
+    const ExcelJS = require('exceljs');
+    const tab = req.query.tab === 'reimburse' ? 'reimburse' : 'leave';
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Aplikasi Absensi Fingerprint';
+    workbook.created = new Date();
+
+    if (tab === 'reimburse') {
+      const rows = await fetchReimburseHistory(req.query);
+      const sheet = workbook.addWorksheet('Riwayat Reimburse');
+      const headers = ['Tanggal', 'Kode', 'Karyawan', 'Deskripsi', 'Jumlah (Rp)', 'Status', 'Pemeriksa', 'Diproses', 'Diajukan'];
+      sheet.getRow(1).values = headers;
+      sheet.getRow(1).font = { bold: true };
+      rows.forEach((r) => {
+        sheet.addRow([
+          String(r.created_at || '').slice(0, 10),
+          r.employee_code,
+          r.employee_name,
+          r.description,
+          Number(r.amount || 0),
+          statusLabel(r.status),
+          r.reviewer_full_name || r.reviewer_name || '',
+          r.reviewed_at || '',
+          r.created_at || '',
+        ]);
+      });
+      sheet.getColumn(5).numFmt = '#,##0';
+      sheet.columns.forEach((c) => { c.width = Math.max(12, Math.min(40, (c.width || 12))); });
+    } else {
+      const rows = await fetchLeaveHistory(req.query);
+      const sheet = workbook.addWorksheet('Riwayat Pengajuan');
+      sheet.getRow(1).values = ['Kode', 'Karyawan', 'Kategori', 'Jenis', 'Mulai', 'Selesai', 'Tujuan', 'Keterangan', 'Status', 'Pemeriksa', 'Diproses', 'Diajukan'];
+      sheet.getRow(1).font = { bold: true };
+      rows.forEach((r) => {
+        const dec = decorateLeave(r);
+        sheet.addRow([
+          r.employee_code,
+          r.employee_name,
+          dec.category,
+          dec.subtype_label,
+          r.start_date,
+          r.end_date,
+          r.place || '',
+          r.reason || '',
+          dec.status_label,
+          dec.reviewer || '',
+          r.reviewed_at || '',
+          r.created_at || '',
+        ]);
+      });
+      sheet.columns.forEach((c) => { c.width = Math.max(12, Math.min(40, (c.width || 12))); });
+    }
+
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
+    const filename = tab === 'reimburse' ? 'riwayat-reimburse.xlsx' : 'riwayat-pengajuan.xlsx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+  })
+);
+
+/**
+ * Impor riwayat pengajuan dari CSV/Excel.
+ * Format kolom: employee_code, subtype, start_date, end_date, place, reason
+ * Baris yang karyawan/subtype-nya tidak dikenal dilewati dan dilaporkan.
+ */
+router.post(
+  '/history/import',
+  auth.requirePermission('attendance:write'),
+  upload.single('file'),
+  wrap(async (req, res) => {
+    if (!req.file) throw badRequest('File tidak ditemukan. Gunakan field "file".');
+    const ExcelJS = require('exceljs');
+
+    let rows = [];
+    const name = String(req.file.originalname || '').toLowerCase();
+    if (/\.(xlsx|xls)$/.test(name)) {
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.file.buffer);
+      const sheet = wb.worksheets[0];
+      sheet.eachRow((row) => {
+        rows.push(row.values.slice(1).map((v) => (v == null ? '' : String(v))));
+      });
+    } else {
+      const text = decodeUpload(req.file.buffer);
+      rows = parseCsv(text, detectDelimiter(text.slice(0, 4000)));
+    }
+    if (rows.length < 2) throw badRequest('File tidak berisi data. Minimal header + 1 baris.');
+
+    const header = rows[0].map((h) => String(h || '').toLowerCase().replace(/[^a-z0-9]/g, ''));
+    const col = (names) => header.findIndex((h) => names.includes(h));
+    const iCode = col(['employeecode', 'kode', 'nik', 'code']);
+    const iSubtype = col(['subtype', 'jenis', 'subjenis']);
+    const iStart = col(['startdate', 'mulai', 'tanggalmulai', 'from']);
+    const iEnd = col(['enddate', 'selesai', 'tanggalselesai', 'to']);
+    const iPlace = col(['place', 'tujuan', 'lokasi']);
+    const iReason = col(['reason', 'keterangan', 'alasan']);
+    const iStatus = col(['status']);
+    if (iCode < 0 || iSubtype < 0 || iStart < 0) {
+      throw badRequest('Header wajib: employee_code, subtype, start_date (opsional: end_date, place, reason, status).');
+    }
+
+    const empRows = await db.queryAll('SELECT id, employee_code FROM employees');
+    const empByCode = new Map(empRows.map((e) => [String(e.employee_code).trim(), e.id]));
+    const { toDate } = require('../utils/date');
+
+    let inserted = 0;
+    const skipped = [];
+    for (let i = 1; i < rows.length; i += 1) {
+      const line = rows[i];
+      try {
+        const code = String(line[iCode] || '').trim();
+        const employeeId = empByCode.get(code);
+        if (!employeeId) throw new Error(`kode "${code}" tidak dikenal`);
+        const subtype = leaveCatalog.findSubtype(String(line[iSubtype] || '').trim());
+        if (!subtype) throw new Error(`subtype "${line[iSubtype]}" tidak dikenal`);
+        const startDate = toDate(String(line[iStart] || '').trim());
+        if (!startDate) throw new Error(`start_date "${line[iStart]}" tidak valid`);
+        const endDate = subtype.single_day ? startDate : toDate(String(iEnd >= 0 ? line[iEnd] || '' : '') || startDate);
+        if (!endDate) throw new Error('end_date tidak valid');
+        const place = iPlace >= 0 ? String(line[iPlace] || '').trim().slice(0, 150) || null : null;
+        if (subtype.needs_place && !place) throw new Error(`lokasi wajib untuk ${subtype.label}`);
+        const statusRaw = iStatus >= 0 ? String(line[iStatus] || '').trim().toLowerCase() : 'pending';
+        const status = ['approved', 'rejected'].includes(statusRaw) ? statusRaw : 'pending';
+        await db.execute(
+          `INSERT INTO leave_requests
+             (employee_id, leave_type, subtype, place, start_date, end_date, reason, status,
+              reviewed_by, reviewed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${status === 'pending' ? 'NULL' : 'NOW()'})`,
+          [
+            employeeId, subtype.leave_type, subtype.key, place, startDate, endDate,
+            iReason >= 0 ? String(line[iReason] || '').trim().slice(0, 500) || null : null,
+            status, status === 'pending' ? null : req.user.id,
+          ]
+        );
+        inserted += 1;
+      } catch (err) {
+        skipped.push({ baris: i + 1, pesan: err.message });
+      }
+    }
+
+    res.json({ ok: true, data: { inserted, skipped: skipped.length, errors: skipped.slice(0, 20) } });
+  })
+);
+
+const receiptUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 + 1024, files: 21 },
+  fileFilter(req, file, cb) {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!allowed.includes(file.mimetype)) {
+      cb(badRequest('Bukti harus JPG, PNG, WEBP, atau PDF.'));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+/** Buat reimburse biaya perjalanan (admin/HR atas nama karyawan, atau karyawan via portal). */
+router.post(
+  '/reimburses',
+  auth.requirePermission('attendance:write'),
+  receiptUpload.single('receipt'),
+  wrap(async (req, res) => {
+    const employeeId = Number(req.body?.employee_id);
+    if (!employeeId) throw badRequest('employee_id wajib diisi.');
+    await employees.getOrFail(employeeId);
+
+    const description = String(req.body?.description || '').trim().slice(0, 500);
+    if (!description) throw badRequest('description wajib diisi.');
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw badRequest('amount harus angka > 0.');
+
+    const portal = require('../services/employeePortal');
+    const row = await portal.createReimburse(
+      employeeId,
+      { description, amount },
+      req.file || null
+    );
+
+    try {
+      const emp = await employees.getOrFail(employeeId);
+      await realtime.onReimburseSubmitted(row, emp.name);
+    } catch {
+      // abaikan
+    }
+
+    res.status(201).json({ ok: true, data: row });
+  })
+);
+
+/** Unduh bukti reimburse (admin/HR/operator). */
+router.get(
+  '/reimburses/:id/receipt',
+  auth.requirePermission('attendance:read'),
+  wrap(async (req, res) => {
+    const row = await db.queryOne('SELECT id, attachment FROM reimburses WHERE id = ?', [
+      Number(req.params.id),
+    ]);
+    if (!row || !row.attachment) throw notFound('Bukti tidak ditemukan.');
+    const portal = require('../services/employeePortal');
+    const path = require('node:path');
+    const name = path.basename(String(row.attachment));
+    const absolute = path.join(portal.receiptDir, name);
+    if (!absolute.startsWith(portal.receiptDir + path.sep)) throw notFound('Bukti tidak ditemukan.');
+    res.setHeader('Content-Disposition', `inline; filename="${name}"`);
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.sendFile(absolute);
+  })
+);
+
+/** Simpan banyak reimburse sekaligus (multi-form admin). */
+router.post(
+  '/reimburses/batch',
+  auth.requirePermission('attendance:write'),
+  receiptUpload.any(),
+  wrap(async (req, res) => {
+    const employeeId = Number(req.body?.employee_id);
+    if (!employeeId) throw badRequest('employee_id wajib diisi.');
+    let items = req.body?.items;
+    if (typeof items === 'string') {
+      try {
+        items = JSON.parse(items);
+      } catch {
+        throw badRequest('items tidak valid (harus JSON array).');
+      }
+    }
+    const filesByIndex = {};
+    for (const f of req.files || []) {
+      const m = /^receipts\[(\d+)\]$/.exec(f.fieldname || '');
+      if (m) filesByIndex[Number(m[1])] = f;
+    }
+    const files = (Array.isArray(items) ? items : []).map((_, i) => filesByIndex[i] || null);
+    const portal = require('../services/employeePortal');
+    const rows = await portal.createReimburseBatch(employeeId, items, files);
+    try {
+      const emp = await employees.getOrFail(employeeId);
+      for (const row of rows) {
+        await realtime.onReimburseSubmitted(row, emp.name);
+      }
+    } catch {
+      // abaikan
+    }
+    res.status(201).json({ ok: true, data: rows, count: rows.length });
+  })
+);
 
 /** Review reimburse (approve/reject). */
 router.put(
@@ -715,6 +1034,16 @@ router.put(
         keterangan: row.description,
       },
     });
+
+    try {
+      await realtime.onReimburseReviewed(
+        row,
+        req.user.full_name || req.user.username,
+        decision
+      );
+    } catch {
+      // abaikan
+    }
 
     res.json({ ok: true, data: row });
   })

@@ -201,7 +201,8 @@
 
     document.body.innerHTML =
       '<div class="layout">' +
-        '<aside class="sidebar">' +
+        '<div class="sidebar-backdrop" id="navBackdrop"></div>' +
+        '<aside class="sidebar" id="appSidebar" aria-label="Navigasi utama">' +
           '<div class="sidebar-header">' +
             '<div class="sidebar-title">' + sidebarTitle + '</div>' +
             '<div class="sidebar-subtitle">' + sidebarSub + '</div>' +
@@ -214,12 +215,18 @@
         '</aside>' +
         '<div class="main">' +
           '<header class="topbar">' +
-            '<div>' +
-              '<h1 id="pageTitle">Dashboard</h1>' +
-              '<div class="topbar-sub" id="pageSub">Ringkasan absensi hari ini</div>' +
+            '<div class="row">' +
+              '<button type="button" class="nav-toggle" id="btnNavToggle" aria-label="Buka navigasi" aria-expanded="false">&#9776;</button>' +
+              '<div>' +
+                '<h1 id="pageTitle">Dashboard</h1>' +
+                '<div class="topbar-sub" id="pageSub">Ringkasan absensi hari ini</div>' +
+              '</div>' +
             '</div>' +
             '<div class="topbar-right">' +
               '<span class="small muted nowrap" id="clockBox"></span>' +
+              '<button type="button" class="notif-bell" id="btnNotifBell" aria-label="Notifikasi">&#128276;' +
+                '<span class="notif-badge" id="notifBadge" hidden>0</span>' +
+              '</button>' +
               '<div class="user-menu" id="userMenu">' +
                 '<button type="button" class="user-chip" id="btnUserMenu" aria-haspopup="menu" aria-expanded="false">' +
                   '<div class="avatar">' + esc(App.initials(user.full_name)) + '</div>' +
@@ -242,8 +249,133 @@
       '<div class="toast-container" id="toastContainer"></div>';
 
     setupUserMenu();
+    setupMobileNav();
+    setupNotifications();
 
     startClock();
+  }
+
+  /** Bell + SSE notifikasi dinas/reimburse. */
+  function setupNotifications() {
+    var bell = document.getElementById('btnNotifBell');
+    var badge = document.getElementById('notifBadge');
+    if (!bell || !badge || bell._notifBound) return;
+    bell._notifBound = true;
+
+    function setBadge(n) {
+      badge.textContent = n > 99 ? '99+' : String(n);
+      badge.hidden = !(n > 0);
+    }
+
+    function refreshBadge() {
+      api.get('/notifications/unread-count')
+        .then(function (res) { setBadge(Number(res.unread) || 0); })
+        .catch(function () {});
+    }
+
+    bell.addEventListener('click', function () {
+      api.get('/notifications', { limit: 30 })
+        .then(function (res) {
+          var rows = res.data || [];
+          setBadge(Number(res.unread) || 0);
+          var body = rows.length === 0
+            ? '<div class="empty-state">Belum ada notifikasi.</div>'
+            : rows.map(function (r) {
+              return '<div class="notif-item' + (Number(r.is_read) ? '' : ' unread') + '" data-notif="' + r.id + '">' +
+                '<div class="notif-item-title">' + esc(r.title) + '</div>' +
+                (r.body ? '<div class="notif-item-body">' + esc(r.body) + '</div>' : '') +
+                '<div class="notif-item-time">' + esc(App.fmtDateTime(r.created_at)) + '</div>' +
+              '</div>';
+            }).join('');
+          App.modal({
+            title: 'Notifikasi',
+            bodyHtml: body +
+              (rows.length > 0 ? '<button type="button" class="btn sm" id="btnNotifReadAll">Tandai semua dibaca</button>' : ''),
+            actions: [{ label: 'Tutup' }],
+            onMount: function (el) {
+              var all = el.querySelector('#btnNotifReadAll');
+              if (all) {
+                all.addEventListener('click', function () {
+                  api.post('/notifications/read/all', {}).then(function () {
+                    setBadge(0);
+                    el.closeModal();
+                  }).catch(function (e) { App.toast(e.message, 'error'); });
+                });
+              }
+              Array.prototype.forEach.call(el.querySelectorAll('[data-notif]'), function (item) {
+                item.addEventListener('click', function () {
+                  api.post('/notifications/read/' + item.getAttribute('data-notif'), {})
+                    .then(function () {
+                      item.classList.remove('unread');
+                      refreshBadge();
+                    }).catch(function () {});
+                });
+              });
+            },
+          });
+        })
+        .catch(function (err) { App.toast(err.message, 'error'); });
+    });
+
+    // SSE realtime: EventSource tanpa header, token via query.
+    try {
+      var src = new EventSource('/api/notifications/stream?token=' + encodeURIComponent(api.token));
+      src.addEventListener('notify', function (ev) {
+        var data = {};
+        try { data = JSON.parse(ev.data); } catch (e) {}
+        App.toast(data.title || 'Notifikasi baru', 'info');
+        refreshBadge();
+        // Halaman pengajuan yang terbuka ikut segar bila ada event dinas/reimburse.
+        if (window.location.hash.indexOf('pengajuan') >= 0 && window.Pages && window.Pages.pengajuanRefresh) {
+          window.Pages.pengajuanRefresh();
+        }
+        if (window.location.hash.indexOf('employee') >= 0) {
+          window.dispatchEvent(new CustomEvent('notif:dinas'));
+        }
+      });
+      src.addEventListener('ready', function (ev) {
+        try { setBadge(Number(JSON.parse(ev.data).unread) || 0); } catch (e) {}
+      });
+      src.onerror = function () {};
+    } catch (e) {
+      refreshBadge();
+      return;
+    }
+    refreshBadge();
+  }
+
+  /** Drawer navigasi untuk layar kecil: hamburger + backdrop + tutup otomatis. */
+  function setupMobileNav() {
+    var toggle = document.getElementById('btnNavToggle');
+    var backdrop = document.getElementById('navBackdrop');
+    if (!toggle || !backdrop) return;
+
+    function setOpen(open) {
+      document.body.classList.toggle('nav-open', open);
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.setAttribute('aria-label', open ? 'Tutup navigasi' : 'Buka navigasi');
+    }
+
+    if (toggle._navBound) return;
+    toggle._navBound = true;
+
+    toggle.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      setOpen(!document.body.classList.contains('nav-open'));
+    });
+
+    backdrop.addEventListener('click', function () {
+      setOpen(false);
+    });
+
+    document.addEventListener('click', function (ev) {
+      var link = ev.target.closest ? ev.target.closest('.sidebar-nav .nav-item') : null;
+      if (link) setOpen(false);
+    });
+
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') setOpen(false);
+    });
   }
 
   /** Dropdown profil: ganti password + keluar, digantungkan di tombol profil. */

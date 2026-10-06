@@ -6,6 +6,7 @@ const auth = require('../middleware/auth');
 const { wrap } = require('../middleware/error');
 const { badRequest } = require('../utils/errors');
 const attendance = require('../services/attendance');
+const portal = require('../services/employeePortal');
 const audit = require('../services/audit');
 const notify = require('../services/notify');
 const employees = require('../services/employees');
@@ -57,6 +58,7 @@ router.get(
             hadir: Number(d.hadir || 0),
             telat: Number(d.telat || 0),
             dinas_luar: Number(d.dinas_luar || 0),
+            dinas_dalam: Number(d.dinas_dalam || 0),
             izin: Number(d.izin || 0),
             sakit: Number(d.sakit || 0),
             cuti: Number(d.cuti || 0),
@@ -124,6 +126,34 @@ router.get(
     const date = toDate(req.params.date) || today();
     const result = await attendance.getOne(Number(req.params.employeeId), date);
     res.json({ ok: true, date, ...result });
+  })
+);
+
+/** Foto selfie dinas (check-in/out) untuk admin/HR/operator. */
+async function serveDutySelfie(req, res, kind) {
+  const duty = await db.queryOne('SELECT id, employee_id FROM duty_checkins WHERE id = ?', [
+    Number(req.params.id),
+  ]);
+  if (!duty) return res.status(404).json({ ok: false, error: { message: 'Data dinas tidak ditemukan.' } });
+  const file = await portal.getSelfieFile(duty.employee_id, duty.id, kind);
+  res.setHeader('Content-Type', file.mime);
+  res.setHeader('Cache-Control', 'private, max-age=60');
+  res.sendFile(file.absolute);
+}
+
+router.get(
+  '/duty/:id/selfie',
+  auth.requirePermission('attendance:read'),
+  wrap(async (req, res) => {
+    await serveDutySelfie(req, res, 'in');
+  })
+);
+
+router.get(
+  '/duty/:id/selfie-out',
+  auth.requirePermission('attendance:read'),
+  wrap(async (req, res) => {
+    await serveDutySelfie(req, res, 'out');
   })
 );
 

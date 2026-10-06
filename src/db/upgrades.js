@@ -233,6 +233,38 @@ async function auditShiftWorkDays(conn) {
   console.log('[migrate]   Catatan: shift hasil UI versi lama mungkin kehilangan hari Minggu tanpa jejak.');
 }
 
+async function upgradeNotifications(conn) {
+  if (await tableExists(conn, 'notifications')) return;
+  await conn.query(
+    `CREATE TABLE \`notifications\` (
+       \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+       \`user_id\` INT UNSIGNED NOT NULL,
+       \`kind\` VARCHAR(30) NOT NULL,
+       \`title\` VARCHAR(150) NOT NULL,
+       \`body\` VARCHAR(500) NULL,
+       \`entity\` VARCHAR(30) NULL,
+       \`entity_id\` INT UNSIGNED NULL,
+       \`is_read\` TINYINT(1) NOT NULL DEFAULT 0,
+       \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+       PRIMARY KEY (\`id\`),
+       KEY \`ix_notif_user\` (\`user_id\`, \`is_read\`, \`id\`),
+       CONSTRAINT \`fk_notif_user\` FOREIGN KEY (\`user_id\`)
+         REFERENCES \`app_users\` (\`id\`) ON DELETE CASCADE
+     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
+  );
+  changes.push('notifications');
+}
+
+async function upgradeDutyCheckins(conn) {
+  if (!(await tableExists(conn, 'duty_checkins'))) return;
+  if (!(await columnExists(conn, 'duty_checkins', 'checkout_selfie_path'))) {
+    await conn.query(
+      'ALTER TABLE `duty_checkins` ADD COLUMN `checkout_selfie_path` VARCHAR(255) NULL AFTER `selfie_path`'
+    );
+    changes.push('duty_checkins.checkout_selfie_path');
+  }
+}
+
 async function upgradeLeaveQuotaLogs(conn) {
   if (!(await tableExists(conn, 'leave_requests'))) return;
 
@@ -255,6 +287,8 @@ async function applyUpgrades(conn) {
   await upgradeEmployees(conn);
   await upgradeLeaveRequests(conn);
   await upgradeLeaveQuotaLogs(conn);
+  await upgradeDutyCheckins(conn);
+  await upgradeNotifications(conn);
   await upgradeAttendanceDaily(conn);
   await auditShiftWorkDays(conn);
 

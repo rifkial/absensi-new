@@ -43,6 +43,10 @@
 
   window.Pages = window.Pages || {};
 
+  window.Pages.pengajuanRefresh = function () {
+    if (document.getElementById('pjBody')) loadData();
+  };
+
   window.Pages.pengajuan = function (root) {
     root.innerHTML =
       '<div class="card"><div class="card-header">' +
@@ -52,7 +56,8 @@
             return '<button class="btn sm" data-tab="' + esc(t.key) + '">' + esc(t.label) + '</button>';
           }).join('') +
           (App.can('attendance:write')
-            ? '<button class="btn sm primary" data-new="1">+ Input Pengajuan</button>'
+            ? '<button class="btn sm primary" data-new="1">+ Input Pengajuan</button>' +
+              '<button class="btn sm" data-new-rb="1">+ Input Reimburse</button>'
             : '') +
         '</div>' +
       '</div>' +
@@ -71,6 +76,8 @@
 
     var newBtn = root.querySelector('[data-new]');
     if (newBtn) newBtn.addEventListener('click', openCreateForm);
+    var newRbBtn = root.querySelector('[data-new-rb]');
+    if (newRbBtn) newRbBtn.addEventListener('click', openReimburseForm);
 
     root.querySelector('[data-tab="leave"]').classList.add('primary');
 
@@ -78,6 +85,109 @@
   };
 
   // ------------------------------------------------- Input pengajuan (admin/HR)
+
+  /** Input reimburse multi-baris atas nama karyawan. */
+  function openReimburseForm() {
+    if (!App.can('attendance:write')) {
+      App.toast('Anda tidak punya hak untuk input reimburse.', 'error');
+      return;
+    }
+    api.get('/employees/options/list')
+      .then(function (res) {
+        var employees = res.data || [];
+        if (employees.length === 0) {
+          App.toast('Belum ada karyawan aktif.', 'error');
+          return;
+        }
+        var empOptions = employees.map(function (e) {
+          return '<option value="' + esc(e.id) + '">' + esc(e.employee_code + ' - ' + e.name) + '</option>';
+        }).join('');
+        App.modal({
+          title: 'Input Reimburse (Admin/HR)',
+          size: 'wide',
+          bodyHtml:
+            '<div class="field"><label>Karyawan <span class="req">*</span></label>' +
+              '<select id="rbEmp">' + empOptions + '</select></div>' +
+            '<div class="callout mt">Tambah baris bila ada banyak biaya. Tiap baris boleh lampirkan bukti sendiri.</div>' +
+            '<div id="rbRows"></div>' +
+            '<button type="button" class="btn sm" id="rbAdd">+ Tambah Biaya</button>' +
+            '<div class="small faint mt" id="rbTotal">Total: Rp 0</div>',
+          actions: [
+            { label: 'Batal' },
+            {
+              label: 'Simpan Reimburse',
+              className: 'primary',
+              onClick: function (el) {
+                var employeeId = el.querySelector('#rbEmp').value;
+                if (!employeeId) { App.toast('Karyawan wajib dipilih.', 'error'); return false; }
+                var rows = el.querySelectorAll('.rb-row');
+                if (rows.length === 0) { App.toast('Tambah minimal satu biaya.', 'error'); return false; }
+                var items = [];
+                var fd = new FormData();
+                fd.append('employee_id', employeeId);
+                var total = 0;
+                for (var i = 0; i < rows.length; i += 1) {
+                  var desc = rows[i].querySelector('.rb-desc').value.trim();
+                  var amount = App.parseRupiah(rows[i].querySelector('.rb-amount').value);
+                  var file = rows[i].querySelector('.rb-file').files[0];
+                  if (!desc) { App.toast('Baris ' + (i + 1) + ': deskripsi wajib diisi.', 'error'); return false; }
+                  if (!amount || amount <= 0) { App.toast('Baris ' + (i + 1) + ': jumlah harus > 0.', 'error'); return false; }
+                  if (file && file.size > 10 * 1024 * 1024) { App.toast('Baris ' + (i + 1) + ': bukti maksimal 10 MB.', 'error'); return false; }
+                  items.push({ description: desc, amount: amount });
+                  if (file) fd.append('receipts[' + i + ']', file, file.name);
+                  total += amount;
+                }
+                fd.append('items', JSON.stringify(items));
+                api.upload('/employees/reimburses/batch', fd)
+                  .then(function (res) {
+                    App.toast((res.count || items.length) + ' reimburse tersimpan (Rp ' + App.fmtNumber(total) + ').', 'success');
+                    el.closeModal();
+                    loadData();
+                  })
+                  .catch(function (err) { App.toast(err.message, 'error'); });
+                return false;
+              },
+            },
+          ],
+          onMount: function (backdrop) {
+            var list = backdrop.querySelector('#rbRows');
+            var totalEl = backdrop.querySelector('#rbTotal');
+            function updateTotal() {
+              var sum = 0;
+              Array.prototype.forEach.call(backdrop.querySelectorAll('.rb-amount'), function (input) {
+                sum += App.parseRupiah(input.value) || 0;
+              });
+              totalEl.textContent = 'Total: Rp ' + App.fmtNumber(sum) + ' (' + backdrop.querySelectorAll('.rb-row').length + ' item)';
+            }
+            function addRow() {
+              var div = document.createElement('div');
+              div.className = 'rb-row card-body';
+              div.style.cssText = 'border:1px solid var(--border);border-radius:8px;margin-bottom:8px';
+              div.innerHTML =
+                '<div class="form-grid">' +
+                  '<div class="field"><label>Deskripsi <span class="req">*</span></label>' +
+                    '<input type="text" class="rb-desc" maxlength="500" placeholder="BBM, tol, parkir..."></div>' +
+                  '<div class="field"><label>Jumlah (Rp) <span class="req">*</span></label>' +
+                    '<div class="row"><span class="small faint">Rp</span>' +
+                    '<input type="text" class="rb-amount" inputmode="numeric" placeholder="50.000" style="flex:1"></div></div>' +
+                '</div>' +
+                '<div class="field mt"><label>Bukti (opsional)</label>' +
+                  '<input type="file" class="rb-file" accept="image/jpeg,image/png,image/webp,application/pdf"></div>' +
+                '<div class="row mt"><button type="button" class="btn sm danger rb-del">Hapus</button></div>';
+              div.querySelector('.rb-del').addEventListener('click', function () { div.remove(); updateTotal(); });
+              var amountInput = div.querySelector('.rb-amount');
+              App.bindRupiah(amountInput);
+              amountInput.addEventListener('input', updateTotal);
+              list.appendChild(div);
+              updateTotal();
+            }
+            backdrop.querySelector('#rbAdd').addEventListener('click', addRow);
+            addRow();
+          },
+        });
+      })
+      .catch(function (err) { App.toast(err.message, 'error'); });
+  }
 
   function openCreateForm() {
     if (!App.can('attendance:write')) {
@@ -308,7 +418,15 @@
                 return '<option value="' + f.key + '"' + (historyStatus === f.key ? ' selected' : '') +
                   '>' + esc(f.label) + '</option>';
               }).join('') +
-            '</select>'
+            '</select>' +
+            '<div class="btn-group">' +
+              '<button class="btn sm" id="pjPrint">Cetak</button>' +
+              '<button class="btn sm" id="pjExcel">Excel</button>' +
+              (currentTab === 'leave' && App.can('attendance:write')
+                ? '<button class="btn sm" id="pjTemplate">Template</button>' +
+                  '<button class="btn sm" id="pjImport">Impor</button>' : '') +
+            '</div>' +
+            '<input type="file" id="pjImportFile" accept=".csv,.xlsx,.xls" hidden>'
           : '') +
       '</div>';
 
@@ -328,6 +446,76 @@
       filter.addEventListener('change', function () {
         historyStatus = this.value;
         renderBody();
+      });
+    }
+
+    var printBtn = document.getElementById('pjPrint');
+    if (printBtn) printBtn.addEventListener('click', function () { window.print(); });
+
+    var excelBtn = document.getElementById('pjExcel');
+    if (excelBtn) {
+      excelBtn.addEventListener('click', function () {
+        var tab = currentTab === 'reimburse' ? 'reimburse' : 'leave';
+        var status = historyStatus === 'all' ? 'all' : historyStatus;
+        api.download('/employees/history/export/excel', { tab: tab, status: status, limit: 2000 })
+          .then(function (res) {
+            var url = URL.createObjectURL(res.blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = res.filename || ('riwayat-' + tab + '.xlsx');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+            App.toast('Excel riwayat diunduh.', 'success');
+          })
+          .catch(function (err) { App.toast('Gagal mengunduh: ' + err.message, 'error'); });
+      });
+    }
+
+    var templateBtn = document.getElementById('pjTemplate');
+    if (templateBtn) {
+      templateBtn.addEventListener('click', function () {
+        var csv = 'employee_code,subtype,start_date,end_date,place,reason,status\n' +
+          '001,dinas_luar_kota,2026-10-06,2026-10-08,Surabaya,Rapat koordinator,pending\n' +
+          '002,cuti_tahunan,2026-10-10,2026-10-11,,,pending\n';
+        var blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'template-riwayat-pengajuan.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+      });
+    }
+
+    var importBtn = document.getElementById('pjImport');
+    var importFile = document.getElementById('pjImportFile');
+    if (importBtn && importFile) {
+      importBtn.addEventListener('click', function () { importFile.click(); });
+      importFile.addEventListener('change', function () {
+        var file = importFile.files && importFile.files[0];
+        if (!file) return;
+        var fd = new FormData();
+        fd.append('file', file, file.name);
+        importBtn.disabled = true;
+        api.upload('/employees/history/import', fd)
+          .then(function (res) {
+            var d = res.data || {};
+            App.toast(
+              d.inserted + ' baris diimpor' + (d.skipped ? ', ' + d.skipped + ' dilewati.' : '.') +
+              ((d.errors && d.errors[0]) ? ' Contoh: baris ' + d.errors[0].baris + ' (' + d.errors[0].pesan + ').' : ''),
+              d.skipped ? 'warning' : 'success'
+            );
+            loadData();
+          })
+          .catch(function (err) { App.toast(err.message, 'error'); })
+          .then(function () {
+            importBtn.disabled = false;
+            importFile.value = '';
+          });
       });
     }
 
@@ -653,6 +841,71 @@
 
   // --------------------------------------------------------- Tab Reimburse
 
+  /** Tanggal pengajuan reimburse (YYYY-MM-DD dari created_at). */
+  function reimburseDate(r) {
+    return String(r.created_at || '').slice(0, 10) || '-';
+  }
+
+  /** Render tabel reimburse dengan kolom tanggal + rowspan tanggal sama. */
+  function reimburseTable(rows, opts) {
+    var o = opts || {};
+    if (!rows || rows.length === 0) {
+      return '<div class="empty-state"><div class="big">&#128178;</div>' +
+        '<div>' + esc(o.empty || 'Tidak ada pengajuan reimburse.') + '</div></div>';
+    }
+
+    var sorted = rows.slice().sort(function (a, b) {
+      var d = String(a.created_at || '') < String(b.created_at || '') ? -1 : 1;
+      if (String(a.created_at || '') === String(b.created_at || '')) d = 0;
+      return d;
+    });
+
+    var head =
+      '<tr><th>Tanggal</th><th>Karyawan</th><th>Deskripsi</th>' +
+      '<th class="num">Jumlah</th><th>Bukti</th>' +
+      (o.history ? '<th>Status</th><th>Pemeriksa</th><th>Diproses</th><th>Diajukan</th>' : '<th class="num">Aksi</th>') +
+      '</tr>';
+
+    var htmlRows = '';
+    var i = 0;
+    while (i < sorted.length) {
+      var date = reimburseDate(sorted[i]);
+      var j = i;
+      while (j < sorted.length && reimburseDate(sorted[j]) === date) j += 1;
+      var span = j - i;
+
+      for (var k = i; k < j; k += 1) {
+        var r = sorted[k];
+        var cells = '';
+        if (k === i) {
+          cells += '<td rowspan="' + span + '" class="nowrap"><strong>' + esc(App.fmtDate(date)) + '</strong>' +
+            '<br><span class="small faint">' + span + ' item</span></td>';
+        }
+        cells += '<td><strong>' + esc(r.employee_name) + '</strong><br><span class="small faint">' +
+          esc(r.employee_code) + '</span></td>';
+        cells += '<td>' + esc(r.description || '-') + '</td>';
+        cells += '<td class="num">Rp ' + esc(App.fmtNumber(r.amount || 0)) + '</td>';
+        cells += '<td>' + (r.receipt_url
+          ? '<button class="btn sm" data-receipt="' + esc(r.receipt_url) + '">Lihat</button>'
+          : '<span class="faint">-</span>') + '</td>';
+        if (o.history) {
+          cells += '<td>' + statusBadge(r.status) + '</td>';
+          cells += '<td>' + (r.reviewer ? esc(r.reviewer) : '<span class="faint">-</span>') + '</td>';
+          cells += '<td>' + (r.reviewed_at ? esc(App.fmtDateTime(r.reviewed_at)) : '<span class="faint">-</span>') + '</td>';
+          cells += '<td>' + (r.created_at ? esc(App.fmtDateTime(r.created_at)) : '<span class="faint">-</span>') + '</td>';
+        } else {
+          cells += '<td class="num">' +
+            '<button class="btn sm success" data-rapprove="' + esc(r.id) + '">Setujui</button> ' +
+            '<button class="btn sm danger" data-rreject="' + esc(r.id) + '">Tolak</button></td>';
+        }
+        htmlRows += '<tr>' + cells + '</tr>';
+      }
+      i = j;
+    }
+
+    return '<div class="table-wrap"><table><thead>' + head + '</thead><tbody>' + htmlRows + '</tbody></table></div>';
+  }
+
   function renderReimburseTab(body) {
     if (reimburseRows.length === 0) {
       body.innerHTML =
@@ -661,45 +914,7 @@
       return;
     }
 
-    var columns = [
-      {
-        key: 'employee_name',
-        label: 'Karyawan',
-        render: function (r) {
-          return '<strong>' + esc(r.employee_name) + '</strong><br><span class="small faint">' +
-            esc(r.employee_code) + '</span>';
-        },
-      },
-      {
-        key: 'description',
-        label: 'Deskripsi',
-        render: function (r) {
-          return esc(r.description || '-');
-        },
-      },
-      {
-        key: 'amount',
-        label: 'Jumlah',
-        render: function (r) {
-          return 'Rp ' + esc(App.fmtNumber(r.amount || 0));
-        },
-      },
-      {
-        key: 'aksi',
-        label: 'Aksi',
-        align: 'right',
-        render: function (r) {
-          return (
-            '<button class="btn sm success" data-rapprove="' + esc(r.id) + '">Setujui</button> ' +
-            '<button class="btn sm danger" data-rreject="' + esc(r.id) + '">Tolak</button>'
-          );
-        },
-      },
-    ];
-
-    body.innerHTML = App.table(columns, reimburseRows, {
-      empty: 'Tidak ada pengajuan reimburse.',
-    });
+    body.innerHTML = reimburseTable(reimburseRows, { empty: 'Tidak ada pengajuan reimburse.' });
 
     body.querySelectorAll('[data-rapprove]').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -710,6 +925,12 @@
     body.querySelectorAll('[data-rreject]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         reviewReimburse(btn.getAttribute('data-rreject'), 'rejected');
+      });
+    });
+
+    body.querySelectorAll('[data-receipt]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        openReimburseReceipt(btn.getAttribute('data-receipt'));
       });
     });
   }
@@ -733,39 +954,38 @@
   function renderReimburseHistory(body) {
     var rows = filterHistory(reimburseHistory);
 
-    var columns = [
-      {
-        key: 'employee_name',
-        label: 'Karyawan',
-        render: function (r) {
-          return '<strong>' + esc(r.employee_name) + '</strong><br><span class="small faint">' +
-            esc(r.employee_code) + '</span>';
-        },
-      },
-      { key: 'description', label: 'Deskripsi', render: function (r) {
-        return esc(r.description || '-');
-      } },
-      { key: 'amount', label: 'Jumlah', align: 'right', render: function (r) {
-        return 'Rp ' + esc(App.fmtNumber(r.amount || 0));
-      } },
-      { key: 'status', label: 'Status', render: function (r) { return statusBadge(r.status); } },
-      { key: 'reviewer', label: 'Pemeriksa', render: function (r) {
-        return r.reviewer ? esc(r.reviewer) : '<span class="faint">-</span>';
-      } },
-      { key: 'reviewed_at', label: 'Diproses', render: function (r) {
-        return r.reviewed_at ? esc(App.fmtDateTime(r.reviewed_at)) : '<span class="faint">-</span>';
-      } },
-      { key: 'created_at', label: 'Diajukan', render: function (r) {
-        return r.created_at ? esc(App.fmtDateTime(r.created_at)) : '<span class="faint">-</span>';
-      } },
-      { key: 'attachment', label: 'Lampiran', render: function (r) {
-        return r.attachment ? '<span class="small">Ada</span>' : '<span class="faint">-</span>';
-      } },
-    ];
+    body.innerHTML = reimburseTable(rows, { history: true, empty: 'Belum ada riwayat reimburse.' });
 
-    body.innerHTML = App.table(columns, rows, {
-      empty: 'Belum ada riwayat reimburse.',
+    body.querySelectorAll('[data-receipt]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        openReimburseReceipt(btn.getAttribute('data-receipt'));
+      });
     });
+  }
+
+  /** Buka bukti reimburse admin: gambar modal, PDF tab baru. */
+  function openReimburseReceipt(url) {
+    fetch(url, { headers: { Authorization: 'Bearer ' + api.token } })
+      .then(function (res) {
+        if (!res.ok) throw new Error('Bukti tidak dapat dimuat (' + res.status + ').');
+        var type = res.headers.get('content-type') || '';
+        return res.blob().then(function (blob) { return { blob: blob, type: type }; });
+      })
+      .then(function (r) {
+        var objectUrl = URL.createObjectURL(r.blob);
+        if (/pdf/i.test(r.type)) {
+          window.open(objectUrl, '_blank');
+          setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 60000);
+          return;
+        }
+        App.modal({
+          title: 'Bukti Reimburse',
+          bodyHtml: '<img src="' + objectUrl + '" alt="Bukti reimburse" style="width:100%;border-radius:8px">',
+          actions: [{ label: 'Tutup' }],
+          onClose: function () { URL.revokeObjectURL(objectUrl); },
+        });
+      })
+      .catch(function (err) { App.toast(err.message, 'error'); });
   }
 
   // --------------------------------------------------------- Helpers

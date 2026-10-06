@@ -189,6 +189,16 @@
       } },
       { key: 'department_name', label: 'Unit Kerja', render: function (r) { return esc(r.department_name || '-'); } },
       { key: 'position_name', label: 'Jabatan', render: function (r) { return esc(r.position_name || '-'); } },
+      {
+        key: 'shift_code', label: 'Shift',
+        render: function (r) {
+          if (!r.shift_code && !r.shift_name) return '<span class="faint">global</span>';
+          var overnight = r.start_time && r.end_time && String(r.end_time).slice(0, 5) <= String(r.start_time).slice(0, 5);
+          return '<span class="badge ' + (overnight ? 'warning' : 'info') + '">' + esc(r.shift_code || '-') + '</span>' +
+            '<div class="small faint">' + esc(App.fmtTime(r.start_time) + '-' + App.fmtTime(r.end_time)) +
+            (overnight ? ' (malam)' : '') + '</div>';
+        },
+      },
       { key: 'fingerprint_status', label: 'Sidik Jari', render: function (r) {
         if (r.fingerprint_status === 'terdaftar') return '<span class="badge success">Terdaftar</span>';
         if (r.fingerprint_status === 'rusak') return '<span class="badge failed">Rusak</span>';
@@ -554,7 +564,7 @@
     var box = document.getElementById('empDetailBody') || rootOf();
     App.modal({
       title: 'Detail Karyawan',
-      size: 'wide',
+      size: 'large',
       bodyHtml: '<div id="empDetailBody">' + App.loading('Memuat...') + '</div>',
       actions: [{ label: 'Tutup' }],
       onMount: function (el) {
@@ -600,15 +610,28 @@
                   { key: 'updated_at', label: 'Diperbarui', render: function (r) { return App.fmtDate(r.updated_at); } },
                 ], fps, { empty: 'Belum ada template sidik jari yang masuk lewat mode PUSH.', emptyIcon: '&#128403;' }) +
 
-                '<h4 style="margin:16px 0 8px">Jadwal 30 Hari Ke Depan</h4>' +
+                '<h4 style="margin:16px 0 8px">Jadwal 30 Hari Ke Depan (jadwal &gt; shift default)</h4>' +
+                '<div class="callout">Jadwal per tanggal menentukan absensi. Shift malam lintas hari: pulang tercatat besok pagi, tetap dihitung tanggal mulai shift.</div>' +
                 App.table([
                   { key: 'work_date', label: 'Tanggal', render: function (r) { return App.fmtDate(r.work_date); } },
+                  {
+                    key: 'shift_code', label: 'Shift',
+                    render: function (r) {
+                      if (!r.shift_code && r.day_type !== 'libur') return '<span class="faint">ikut default</span>';
+                      if (!r.shift_code) return '<span class="faint">-</span>';
+                      var overnight = r.start_time && r.end_time && String(r.end_time).slice(0, 5) <= String(r.start_time).slice(0, 5);
+                      return '<span class="badge ' + (overnight ? 'warning' : 'info') + '">' + esc(r.shift_code) + '</span>' +
+                        '<div class="small faint">' + esc(App.fmtTime(r.start_time) + '-' + App.fmtTime(r.end_time)) +
+                        (overnight ? ' (malam)' : '') + '</div>';
+                    },
+                  },
                   { key: 'day_type', label: 'Jenis', render: function (r) {
                     return r.day_type === 'libur'
                       ? '<span class="badge hari_libur">Libur</span>'
                       : '<span class="badge success">Kerja</span>';
                   } },
-                ], scheds, { empty: 'Belum ada jadwal khusus. Semua hari mengikuti jam kerja global.' }) +
+                  { key: 'note', label: 'Catatan', render: function (r) { return r.note ? esc(r.note) : '<span class="faint">-</span>'; } },
+                ], scheds, { empty: 'Belum ada jadwal khusus. Semua hari mengikuti shift default / jam global.' }) +
 
                 '<h4 style="margin:16px 0 8px">Riwayat Izin / Sakit / Cuti</h4>' +
                 App.table([

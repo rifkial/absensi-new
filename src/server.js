@@ -5,6 +5,7 @@ const db = require('./db/pool');
 const { createApp } = require('./app');
 const { createPushRouter } = require('./devices/pushhttp/adapter');
 const sync = require('./services/sync');
+const realtime = require('./services/realtime');
 const { assertProductionReady } = require('./utils/errors');
 
 /**
@@ -56,6 +57,8 @@ async function start() {
   mainServer = app.listen(config.server.port, config.server.host, () => {
     console.log(`  Web       : http://localhost:${config.server.port}`);
   });
+  // Lacak koneksi terbuka (SSE/EventSource) supaya shutdown tidak gantung.
+  trackConnections(mainServer);
   mainServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.error(`\n[ERROR] Port ${config.server.port} sudah dipakai proses lain.`);
@@ -126,6 +129,7 @@ function startPushServer() {
     const hint = require('./devices/pushhttp/adapter').getLocalAddressHint();
     console.log(`  PUSH      : port ${config.server.pushPort} (isi IP ${hint} di menu ADMS mesin)`);
   });
+  trackConnections(pushServer);
 
   pushServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
@@ -137,18 +141,55 @@ function startPushServer() {
   });
 }
 
+/** Lacak socket terbuka supaya shutdown bisa menghancurkan sisa koneksi. */
+const openSockets = new Set();
+
+function trackConnections(server) {
+  if (!server) return;
+  server.on('connection', (socket) => {
+    openSockets.add(socket);
+    socket.on('close', () => openSockets.delete(socket));
+  });
+}
+
+/**
+ * Tutup server tanpa gantung: SSE/EventSource keep-alive bikin
+ * server.close() menunggu selamanya, jadi hancurkan sisa socket
+ * setelah server berhenti menerima koneksi baru.
+ */
+function closeServer(server) {
+  return new Promise((resolve) => {
+    if (!server) return resolve();
+    server.close(() => resolve());
+    setTimeout(() => {
+      for (const socket of openSockets) {
+        try {
+          socket.destroy();
+        } catch {
+          // abaikan
+        }
+      }
+      resolve();
+    }, 1500).unref?.();
+  });
+}
+
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
 
   console.log(`\n[M${signal}] Menutup server...`);
   sync.stopScheduler();
+  realtime.closeAll();
 
-  const closers = [];
-  if (mainServer) closers.push(new Promise((r) => mainServer.close(r)));
-  if (pushServer) closers.push(new Promise((r) => pushServer.close(r)));
+  // Pengaman: paksa keluar bila shutdown macet (mis. pool DB menggantung).
+  setTimeout(() => {
+    console.error('[shutdown] Paksa keluar setelah 8 detik.');
+    process.exit(1);
+  }, 8000).unref?.();
 
-  await Promise.allSettled(closers);
+  await closeServer(mainServer);
+  await closeServer(pushServer);
   await db.closePool().catch(() => {});
 
   console.log('[shutdown] Selesai.');

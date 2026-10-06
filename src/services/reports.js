@@ -151,6 +151,7 @@ async function buildMonthlyRows({ month, departmentId = null, employeeId = null 
        SUM(d.status = 'sakit') AS total_sakit,
        SUM(d.status = 'cuti') AS total_cuti,
        SUM(d.status = 'dinas_luar') AS total_dinas_luar,
+       SUM(d.status = 'dinas_dalam') AS total_dinas_dalam,
        SUM(d.status = 'alpa') AS total_alpa,
        SUM(d.status = 'belum') AS total_belum,
        SUM(d.status = 'hari_libur') AS total_libur,
@@ -194,10 +195,11 @@ async function buildAttendanceRecapRows({ from, to, departmentId = null, employe
        dep.name AS department_name,
        pos.name AS position_name,
        SUM(d.status <> 'hari_libur') AS total_hari_kerja,
-       SUM(d.status IN ('hadir', 'telat')) AS total_hadir,
+       SUM(d.status IN ('hadir', 'telat', 'dinas_luar', 'dinas_dalam')) AS total_hadir,
        SUM(d.status = 'izin') AS total_izin,
        SUM(d.status = 'cuti') AS total_cuti,
        SUM(d.status = 'dinas_luar') AS total_dinas_luar,
+       SUM(d.status = 'dinas_dalam') AS total_dinas_dalam,
        SUM(d.status = 'telat') AS total_hari_terlambat,
        SUM(d.overtime_minutes) AS total_overtime_minutes
      FROM attendance_daily d
@@ -329,6 +331,7 @@ async function build(format, options = {}) {
           izin: 0,
           sakit: 0,
           dinas_luar: 0,
+          dinas_dalam: 0,
           alpa: 0,
           total_late_minutes: 0,
           total_work_minutes: 0,
@@ -338,8 +341,10 @@ async function build(format, options = {}) {
       if (row.status === 'hari_libur') continue;
       bucket.hari_kerja += 1;
       if (bucket[row.status] !== undefined) bucket[row.status] += 1;
-      // Dinas luar dihitung sebagai kehadiran: tugas lapangan tetap jam kerja.
-      if (row.status === 'dinas_luar') bucket.hadir += 1;
+      // Dinas dalam/luar dihitung sebagai kehadiran: tugas tetap jam kerja.
+      // Telat ikut dihitung hadir supaya % hadir konsisten dengan bulanan.
+      if (row.status === 'dinas_luar' || row.status === 'dinas_dalam') bucket.hadir += 1;
+      if (row.status === 'telat') bucket.hadir += 1;
       bucket.total_late_minutes += Number(row.late_minutes || 0);
       bucket.total_work_minutes += Number(row.work_minutes || 0);
     }
@@ -409,22 +414,19 @@ function decorateDailyRow(row) {
 }
 
 function decorateMonthlyRow(row) {
+  const hadirDays =
+    Number(row.total_hadir || 0) +
+    Number(row.total_telat || 0) +
+    Number(row.total_dinas_luar || 0) +
+    Number(row.total_dinas_dalam || 0);
+  const workDays = Math.max(
+    1,
+    Number(row.total_days || 0) - Number(row.total_libur || 0)
+  );
   return {
     ...row,
     employee_name: row.employee_name,
-    persen_hadir:
-      Number(row.total_hadir || 0) +
-        Number(row.total_telat || 0) +
-        Number(row.total_dinas_luar || 0) >
-      0
-        ? Math.round(
-            ((Number(row.total_hadir || 0) +
-              Number(row.total_telat || 0) +
-              Number(row.total_dinas_luar || 0)) /
-              Math.max(1, Number(row.total_days || 0) - Number(row.total_libur || 0))) *
-              100
-          )
-        : 0,
+    persen_hadir: hadirDays > 0 ? Math.round((hadirDays / workDays) * 100) : 0,
     rata_late_jam: (Number(row.avg_late_minutes || 0) / 60).toFixed(2),
     total_kerja_jam: (Number(row.total_work_minutes || 0) / 60).toFixed(2),
     total_lembur_jam: (Number(row.total_overtime_minutes || 0) / 60).toFixed(2),
@@ -480,6 +482,7 @@ const MONTHLY_COLUMNS = [
   { key: 'total_sakit', header: 'Sakit', width: 9 },
   { key: 'total_cuti', header: 'Cuti', width: 9 },
   { key: 'total_dinas_luar', header: 'Dinas Luar', width: 13 },
+  { key: 'total_dinas_dalam', header: 'Dinas Dalam', width: 13 },
   { key: 'total_alpa', header: 'Alpa', width: 9 },
   { key: 'persen_hadir', header: '% Kehadiran', width: 13 },
   { key: 'total_late_minutes', header: 'Total Telat (menit)', width: 18 },
@@ -510,6 +513,7 @@ const SUMMARY_COLUMNS = [
   { key: 'sakit', header: 'Sakit', width: 9 },
   { key: 'cuti', header: 'Cuti', width: 9 },
   { key: 'dinas_luar', header: 'Dinas Luar', width: 13 },
+  { key: 'dinas_dalam', header: 'Dinas Dalam', width: 13 },
   { key: 'alpa', header: 'Alpa', width: 9 },
   { key: 'belum', header: 'Belum', width: 9 },
   { key: 'hari_libur', header: 'Libur', width: 9 },
@@ -525,6 +529,8 @@ const EMPLOYEE_COLUMNS = [
   { key: 'telat', header: 'Telat', width: 9 },
   { key: 'izin', header: 'Izin', width: 9 },
   { key: 'sakit', header: 'Sakit', width: 9 },
+  { key: 'dinas_luar', header: 'Dinas Luar', width: 12 },
+  { key: 'dinas_dalam', header: 'Dinas Dalam', width: 12 },
   { key: 'alpa', header: 'Alpa', width: 9 },
   { key: 'persen_hadir', header: '% Kehadiran', width: 13 },
   { key: 'total_late_minutes', header: 'Total Telat (menit)', width: 18 },
@@ -554,6 +560,7 @@ const ATTENDANCE_RECAP_COLUMNS = [
   { key: 'total_izin', header: 'Total Izin', width: 10 },
   { key: 'total_cuti', header: 'Total Cuti', width: 10 },
   { key: 'total_dinas_luar', header: 'Total Dinas Luar', width: 14 },
+  { key: 'total_dinas_dalam', header: 'Total Dinas Dalam', width: 14 },
   { key: 'total_hari_terlambat', header: 'Total Hari Terlambat', width: 16 },
   { key: 'total_lembur_jam', header: 'Total Lemburan (jam)', width: 16 },
 ];
@@ -656,8 +663,9 @@ function addSummaryBlock(workbook, summary, range) {
     ['Total telat', summary.by_status.telat || 0],
     ['Total izin', summary.by_status.izin || 0],
     ['Total sakit', summary.by_status.sakit || 0],
-['Total cuti', summary.by_status.cuti || 0],
+    ['Total cuti', summary.by_status.cuti || 0],
   ['Total dinas luar kota', summary.by_status.dinas_luar || 0],
+  ['Total dinas dalam kota', summary.by_status.dinas_dalam || 0],
   ['Total alpa', summary.by_status.alpa || 0],
     ['Total belum absen', summary.by_status.belum || 0],
     ['Total keterlambatan (menit)', summary.totals.total_late_minutes],

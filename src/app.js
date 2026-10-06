@@ -6,6 +6,8 @@ const express = require('express');
 const config = require('./config');
 const { errorHandler, notFoundHandler, bodyParserErrorHandler } = require('./middleware/error');
 
+const auth = require('./middleware/auth');
+const { wrap } = require('./middleware/error');
 const authRoutes = require('./routes/auth');
 const employeeRoutes = require('./routes/employees');
 const shiftRoutes = require('./routes/shifts');
@@ -15,6 +17,7 @@ const attendanceRoutes = require('./routes/attendance');
 const reportRoutes = require('./routes/reports');
 const settingsRoutes = require('./routes/settings');
 const auditRoutes = require('./routes/audit');
+const notificationRoutes = require('./routes/notifications');
 const meRoutes = require('./routes/me');
 
 /**
@@ -36,7 +39,7 @@ function createApp() {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'same-origin');
-    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=()');
     next();
   });
 
@@ -57,6 +60,83 @@ function createApp() {
     });
   });
 
+  // Proksi tile OSM: browser panggil server lokal, server teruskan ke
+  // tile.openstreetmap.org dengan header policy benar. Tanpa key.
+  app.get(
+    '/api/geo/tiles/:z/:x/:y.png',
+    auth.requireAuth,
+    wrap(async (req, res) => {
+      const z = Number(req.params.z);
+      const x = Number(req.params.x);
+      const y = Number(req.params.y);
+      if (![z, x, y].every((n) => Number.isInteger(n) && n >= 0 && n < 1 << 20) || z > 19) {
+        return res.status(400).json({ ok: false, error: { message: 'koordinat tile tidak valid.' } });
+      }
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      try {
+        const r = await fetch(`https://tile.openstreetmap.org/${z}/${x}/${y}.png`, {
+          signal: ctrl.signal,
+          headers: {
+            'User-Agent': 'absensi-fingerprint/1.0 (dinas-checkin)',
+            Referer: 'https://tile.openstreetmap.org/',
+          },
+        });
+        if (!r.ok) return res.status(r.status).end();
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        const buf = Buffer.from(await r.arrayBuffer());
+        res.send(buf);
+      } catch {
+        res.status(502).end();
+      } finally {
+        clearTimeout(timer);
+      }
+    })
+  );
+
+  // Proksi geocode: browser panggil server (tanpa key), server teruskan ke
+  // Photon dengan User-Agent + Referer sesuai policy. Photon tanpa key.
+  app.get(
+    '/api/geo/search',
+    auth.requireAuth,
+    wrap(async (req, res) => {
+      const q = String(req.query.q || '').trim().slice(0, 120);
+      if (!q) return res.json({ ok: true, data: [] });
+      const url = `https://photon.komoot.io/api/?limit=5&lang=en&q=${encodeURIComponent(q)}`;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      try {
+        const r = await fetch(url, {
+          signal: ctrl.signal,
+          headers: {
+            'User-Agent': 'absensi-fingerprint/1.0 (dinas-checkin)',
+            Referer: 'https://tile.openstreetmap.org/',
+          },
+        });
+        if (!r.ok) throw new Error(`geocode ${r.status}`);
+        const body = await r.json();
+        const rows = (body && body.features ? body.features : [])
+          .map((f) => {
+            const c = f && f.geometry && f.geometry.coordinates;
+            const p = f ? f.properties : {};
+            if (!c || c.length < 2) return null;
+            return {
+              lat: Number(c[1]),
+              lng: Number(c[0]),
+              label: [p.name, p.city || p.county, p.state, p.country].filter(Boolean).join(', '),
+            };
+          })
+          .filter(Boolean);
+        res.json({ ok: true, data: rows });
+      } catch (err) {
+        res.json({ ok: true, data: [], warning: `pencarian gagal: ${err.message}` });
+      } finally {
+        clearTimeout(timer);
+      }
+    })
+  );
+
   app.use('/api/auth', authRoutes);
   app.use('/api/employees', employeeRoutes);
   app.use('/api/shifts', shiftRoutes);
@@ -66,6 +146,7 @@ function createApp() {
   app.use('/api/reports', reportRoutes);
   app.use('/api/settings', settingsRoutes);
   app.use('/api/audit', auditRoutes);
+  app.use('/api/notifications', notificationRoutes);
   app.use('/api/me', meRoutes);
 
   // Frontend

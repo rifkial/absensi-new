@@ -334,6 +334,25 @@ CREATE TABLE IF NOT EXISTS notification_templates (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------
+-- 13b. Inbox notifikasi realtime (SSE)
+--     Satu baris per penerima per kejadian: dinas & reimburse create/review.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notifications (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id      INT UNSIGNED NOT NULL COMMENT 'penerima (app_users.id)',
+  kind         VARCHAR(30)  NOT NULL COMMENT 'leave.submitted/reviewed, reimburse.submitted/reviewed',
+  title        VARCHAR(150) NOT NULL,
+  body         VARCHAR(500) NULL,
+  entity       VARCHAR(30)  NULL COMMENT 'leave_requests | reimburses',
+  entity_id    INT UNSIGNED NULL,
+  is_read      TINYINT(1)   NOT NULL DEFAULT 0,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_notif_user (user_id, is_read, id),
+  CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES app_users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
 -- 14. Log audit untuk perubahan data sensitif
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS audit_logs (
@@ -396,7 +415,8 @@ CREATE TABLE IF NOT EXISTS duty_checkins (
   longitude      DECIMAL(10,7) NULL    COMMENT 'Koordinat bujur -180..180',
   accuracy_m     SMALLINT UNSIGNED NULL COMMENT 'Akurasi GPS dalam meter',
   address        VARCHAR(255) NULL     COMMENT 'Alamat hasil reverse geocode',
-  selfie_path    VARCHAR(255) NULL     COMMENT 'Lokasi file foto selfie',
+  selfie_path    VARCHAR(255) NULL     COMMENT 'Lokasi file foto selfie check-in',
+  checkout_selfie_path VARCHAR(255) NULL COMMENT 'Lokasi file foto selfie check-out',
   note           VARCHAR(500) NULL     COMMENT 'Keterangan tugas',
   leave_id       INT UNSIGNED NULL     COMMENT 'Pengajuan dinas_luar terkait',
   created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
