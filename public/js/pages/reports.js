@@ -97,11 +97,11 @@
             '<div class="field" id="wrapTo"><label for="rpTo">Sampai Tanggal</label><input type="date" id="rpTo" value="' + esc(state.to) + '"></div>' +
             '<div class="field" id="wrapMonth"><label for="rpMonth">Bulan</label><input type="month" id="rpMonth" value="' + esc(state.month) + '"></div>' +
             '<div class="field"><label for="rpDept">Unit Kerja</label><select id="rpDept"><option value="">Semua</option></select></div>' +
-            '<div class="field"><label for="rpStatus">Status</label><select id="rpStatus"><option value="">Semua</option>' +
+            '<div class="field" id="wrapStatus"><label for="rpStatus">Status</label><select id="rpStatus"><option value="">Semua</option>' +
 ['hadir', 'telat', 'dinas_luar', 'dinas_dalam', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'].map(function (s) {
     return '<option value="' + s + '">' + esc(App.STATUS_LABELS[s] || s) + '</option>';
               }).join('') +
-            '</select></div>' +
+            '</select><span class="help" id="statusHelp">Hanya untuk Rekap Harian.</span></div>' +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -138,7 +138,7 @@
 
   function bind() {
     var fmt = document.getElementById('rpFormat');
-    var preview = document.getElementById('rpPreview');
+    var preview = document.getElementById('repPreview');
     var excel = document.getElementById('repExcel');
     var csv = document.getElementById('repCsv');
     var print = document.getElementById('repPrint');
@@ -152,6 +152,12 @@
     if (excel) excel.addEventListener('click', function () { download('excel'); });
     if (csv) csv.addEventListener('click', function () { download('csv'); });
     if (print) print.addEventListener('click', function () { window.print(); });
+
+    // Filter lain ikut refresh pratinjau saat diganti.
+    ['rpDept', 'rpStatus', 'rpFrom', 'rpTo', 'rpMonth'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener('change', loadPreview);
+    });
   }
 
   /** Format bulan memakai filter "Bulan", selain itu memakai rentang tanggal. */
@@ -166,6 +172,16 @@
     document.getElementById('wrapMonth').style.display = usesMonth ? '' : 'none';
     document.getElementById('wrapFrom').style.display = usesMonth ? 'none' : '';
     document.getElementById('wrapTo').style.display = usesMonth ? 'none' : '';
+
+    var statusWrap = document.getElementById('wrapStatus');
+    if (statusWrap) {
+      var show = STATUS_FORMATS.indexOf(state.format) >= 0;
+      statusWrap.style.display = show ? '' : 'none';
+      if (!show) {
+        var sel = document.getElementById('rpStatus');
+        if (sel) sel.value = '';
+      }
+    }
   }
 
   function readFilters() {
@@ -183,12 +199,16 @@
     };
   }
 
+  // Filter status hanya dipakai Rekap Harian (baris = 1 karyawan 1 tanggal).
+  // Format agregat (bulanan/kehadiran/dll) selalu tampil penuh.
+  var STATUS_FORMATS = ['rekap_harian'];
+
   function query(f) {
     var q = { format: f.format };
     if (f._usesMonth) q.month = f.month;
     else { q.from = f.from; q.to = f.to; }
     if (f.department_id) q.department_id = f.department_id;
-    if (f.status && f.format !== 'lembur') q.status = f.status;
+    if (f.status && STATUS_FORMATS.indexOf(f.format) >= 0) q.status = f.status;
     return q;
   }
 

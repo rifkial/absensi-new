@@ -316,7 +316,7 @@ async function build(format, options = {}) {
 
   if (format === 'per_karyawan') {
     const summary = await attendanceService.summary({ from, to, departmentId: options.department_id });
-    const detail = await buildDailyRows({ from, to, departmentId: options.department_id, employeeId: options.employee_id });
+    const detail = await buildDailyRows({ from, to, departmentId: options.department_id, employeeId: options.employee_id, status: options.status });
     const byEmployee = new Map();
 
     for (const row of detail) {
