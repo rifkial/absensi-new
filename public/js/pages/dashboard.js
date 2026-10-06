@@ -54,15 +54,26 @@
       if (syncAll) syncAll.addEventListener('click', doSyncAll);
     }
 
+    var dashCtrl = null;
+
     function load() {
-      document.getElementById('dashBody').innerHTML = App.loading('Mengambil data...');
-      api.get('/attendance/dashboard', { days: rangeDays })
+      var body = document.getElementById('dashBody');
+      if (!body) return;
+      if (dashCtrl) { try { dashCtrl.abort(); } catch (e) {} }
+      dashCtrl = (typeof AbortController === 'function') ? new AbortController() : null;
+      body.innerHTML = App.loading('Mengambil data...');
+      api.get('/attendance/dashboard', { days: rangeDays }, dashCtrl ? { signal: dashCtrl.signal } : null)
         .then(function (res) {
+          if (dashCtrl && dashCtrl.signal.aborted) return;
           data = res.data;
           paint();
         })
         .catch(function (err) {
-          document.getElementById('dashBody').innerHTML =
+          if (err && err.name === 'AbortError') return;
+          if (dashCtrl && dashCtrl.signal.aborted) return;
+          var b = document.getElementById('dashBody');
+          if (!b) return;
+          b.innerHTML =
             '<div class="card"><div class="empty-state">' +
               '<div class="big">&#9888;</div>' +
               '<div><strong>Gagal memuat dashboard.</strong></div>' +
@@ -299,12 +310,7 @@
 
           api.post('/devices/sync-all', { regenerate_days: 2 })
             .then(function (res) {
-              var failed = Number(res.failed || 0);
-              App.toast(
-                'Sinkronisasi selesai. ' + App.formatNumber(res.devices || 0) + ' mesin, ' +
-                App.formatNumber(res.inserted || 0) + ' log baru, ' + failed + ' gagal.',
-                failed === 0 ? 'success' : 'warning'
-              );
+              App.toast(res.message || 'Sinkronisasi berjalan di background.', 'info');
               load();
             })
             .catch(function (err) { App.toast(err.message, 'error'); })

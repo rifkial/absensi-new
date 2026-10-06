@@ -14,10 +14,17 @@
   var devices = [];
   var protocols = null;
   var syncStatus = null;
+  var syncPollTimer = null;
+
+  function stopSyncPoll() {
+    if (syncPollTimer) { clearInterval(syncPollTimer); syncPollTimer = null; }
+  }
 
   window.Pages.devices = function (root) {
+    stopSyncPoll();
     root.innerHTML =
       '<div id="devAlert"></div>' +
+      '<div class="card"><div class="card-body" id="schedBar">' + App.loading('Memuat status auto-sync...') + '</div></div>' +
       '<div class="card">' +
         '<div class="card-header">' +
           '<div><h2 class="card-title">Mesin Fingerprint Terdaftar</h2>' +
@@ -42,6 +49,7 @@
     document.getElementById('devReload').addEventListener('click', loadAll);
     document.getElementById('devSyncAll').addEventListener('click', doSyncAll);
     document.getElementById('devScan').addEventListener('click', openScan);
+    paintSchedBar();
 
     var add = document.getElementById('devAdd');
     if (add) add.addEventListener('click', function () { openForm(null); });
@@ -68,6 +76,7 @@
   };
 
   function loadAll() {
+    if (!document.getElementById('devTable')) { stopSyncPoll(); return; }
     var sub = document.getElementById('devSub');
     if (sub) sub.textContent = 'Memuat...';
 
@@ -77,16 +86,67 @@
 
     api.get('/devices')
       .then(function (res) {
+        if (!document.getElementById('devTable')) return null;
         devices = res.data || [];
         paint();
         return api.get('/devices/history', { limit: 20 });
       })
       .then(function (res) {
+        if (!res || !document.getElementById('devHistory')) return;
         paintHistory(res.data || []);
+        resumeSyncPoll();
       })
       .catch(function (err) {
-        document.getElementById('devTable').innerHTML =
+        var box = document.getElementById('devTable');
+        if (!box) return;
+        box.innerHTML =
           '<div class="empty-state"><div class="big">&#9888;</div><div>' + esc(err.message) + '</div></div>';
+      });
+  }
+
+  /** Setelah refresh, lanjutkan polling bila sync masih berjalan di server. */
+  function resumeSyncPoll() {
+    if (syncPollTimer) return;
+    api.get('/devices/status')
+      .then(function (res) {
+        if (res.data && res.data.running) pollSyncDone();
+      })
+      .catch(function () {});
+  }
+
+  /** Bar status auto-sync + tombol hidup/mati tanpa restart. */
+  function paintSchedBar() {
+    var bar = document.getElementById('schedBar');
+    if (!bar) return;
+    api.get('/devices/status')
+      .then(function (res) {
+        var st = res.data || {};
+        var on = Boolean(st.enabled);
+        bar.innerHTML =
+          '<div class="row" style="align-items:center;gap:10px;flex-wrap:wrap">' +
+            '<span class="badge ' + (on ? 'success' : 'idle') + '">Auto-sync ' + (on ? 'NYALA' : 'MATI') + '</span>' +
+            '<span class="small faint">Sinkron manual selalu bisa via tombol Sync. Auto-sync MATI = UI tidak berebut pool DB.</span>' +
+            '<div class="grow"></div>' +
+            (App.can('devices:write')
+              ? '<button class="btn sm' + (on ? '' : ' primary') + '" id="schedToggle">' + (on ? 'Matikan Auto-sync' : 'Nyalakan Auto-sync') + '</button>'
+              : '') +
+          '</div>';
+        var btn = document.getElementById('schedToggle');
+        if (btn) {
+          btn.addEventListener('click', function () {
+            btn.disabled = true;
+            api.post('/devices/scheduler', { enabled: !on })
+              .then(function (r) {
+                App.toast(r.message || 'Status auto-sync diubah.', 'success');
+                paintSchedBar();
+              })
+              .catch(function (err) { App.toast(err.message, 'error'); })
+              .then(function () { btn.disabled = false; });
+          });
+        }
+      })
+      .catch(function () {
+        bar.innerHTML = '<span class="small faint">Status auto-sync tidak bisa dimuat.</span>';
       });
   }
 
@@ -405,6 +465,32 @@
       });
   }
 
+  /** Polling status sync sampai selesai, lalu refresh daftar. */
+  function pollSyncDone(done) {
+    stopSyncPoll();
+    var tries = 0;
+    syncPollTimer = setInterval(function () {
+      if (!document.getElementById('devTable')) { stopSyncPoll(); return; }
+      tries += 1;
+      api.get('/devices/status')
+        .then(function (res) {
+          var running = res.data && res.data.running;
+          if (!running || tries >= 40) {
+            stopSyncPoll();
+            loadAll();
+            if (done) done();
+          }
+        })
+        .catch(function () {
+          if (tries >= 40) {
+            stopSyncPoll();
+            loadAll();
+            if (done) done();
+          }
+        });
+    }, 3000);
+  }
+
   function doSync(device, btn) {
     if (!App.perm('devices:sync')) return;
 
@@ -414,20 +500,17 @@
 
     api.post('/devices/' + device.id + '/sync', { regenerate_days: 2 })
       .then(function (res) {
-        App.toast(
-          'Sinkronisasi selesai. ' + App.formatNumber(res.inserted || 0) + ' log baru, ' +
-          App.formatNumber(res.duplicated || 0) + ' duplikat, ' + App.formatNumber(res.records || 0) + ' total dibaca.',
-          'success'
-        );
-        loadAll();
+        App.toast(res.message || 'Sinkronisasi berjalan di background.', 'info');
+        pollSyncDone(function () {
+          btn.disabled = false;
+          btn.textContent = old;
+        });
       })
       .catch(function (err) {
         App.toast('Sinkronisasi gagal: ' + err.message, 'error');
-        loadAll();
-      })
-      .then(function () {
         btn.disabled = false;
         btn.textContent = old;
+        loadAll();
       });
   }
 
@@ -445,16 +528,14 @@
 
         api.post('/devices/sync-all', { regenerate_days: 2 })
           .then(function (res) {
-            App.toast(
-              'Selesai. ' + App.formatNumber(res.inserted || 0) + ' log baru dari ' +
-              App.formatNumber(res.devices || 0) + ' mesin, ' + App.formatNumber(res.failed || 0) + ' gagal.',
-              Number(res.failed || 0) > 0 ? 'warning' : 'success'
-            );
-            loadAll();
+            App.toast(res.message || 'Sinkronisasi berjalan di background.', 'info');
+            pollSyncDone(function () {
+              if (btn) { btn.disabled = false; btn.textContent = 'Sinkron Semua'; }
+            });
           })
           .catch(function (err) { App.toast(err.message, 'error'); })
           .then(function () {
-            if (btn) { btn.disabled = false; btn.textContent = 'Sinkron Semua'; }
+            // tombol dibuka oleh pollSyncDone setelah sync selesai
           });
       },
     });

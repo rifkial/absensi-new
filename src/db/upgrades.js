@@ -162,6 +162,21 @@ async function upgradeLeaveRequests(conn) {
     );
     changes.push('leave_requests.place');
   }
+
+  // Transportasi + nomor surat perjalanan dinas (diisi saat/after approve).
+  if (!(await columnExists(conn, 'leave_requests', 'transport'))) {
+    await conn.query(
+      'ALTER TABLE `leave_requests` ADD COLUMN `transport` VARCHAR(150) NULL AFTER `attachment`'
+    );
+    changes.push('leave_requests.transport');
+  }
+
+  if (!(await columnExists(conn, 'leave_requests', 'travel_letter_no'))) {
+    await conn.query(
+      'ALTER TABLE `leave_requests` ADD COLUMN `travel_letter_no` VARCHAR(60) NULL AFTER `transport`'
+    );
+    changes.push('leave_requests.travel_letter_no');
+  }
 }
 
 async function upgradeAttendanceDaily(conn) {

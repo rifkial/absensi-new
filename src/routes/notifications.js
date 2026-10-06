@@ -29,6 +29,10 @@ router.get('/stream', async (req, res) => {
   );
   if (!user || !user.is_active) return res.status(401).end();
 
+  // Stream jangan kena requestTimeout 30s server + socket timeout.
+  req.setTimeout(0);
+  res.setTimeout(0);
+
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -46,11 +50,19 @@ router.get('/stream', async (req, res) => {
       // abaikan, dibersihkan saat close
     }
   }, 25000);
+  heartbeat.unref?.();
 
-  req.on('close', () => {
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
     clearInterval(heartbeat);
     realtime.removeClient(user.id, res);
-  });
+    req.removeListener('close', cleanup);
+    res.removeListener('close', cleanup);
+  };
+  req.on('close', cleanup);
+  res.on('close', cleanup);
 });
 
 router.use(auth.requireAuth);

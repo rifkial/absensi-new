@@ -37,6 +37,7 @@ router.put(
     // Transport SMTP dibuat ulang bila host/port/user berubah, supaya
     // password baru di UI benar-benar dipakai pada pengiriman berikutnya.
     channels.invalidateMailer();
+    require('../services/notify').invalidateStatusCache?.();
 
     await audit.recordChange({
       userId: req.user.id,

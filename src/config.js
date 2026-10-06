@@ -73,7 +73,7 @@ const config = {
     user: str('DB_USER', 'root'),
     password: str('DB_PASSWORD', ''),
     database: str('DB_NAME', 'absensi'),
-    connectionLimit: int('DB_CONNECTION_LIMIT', 10),
+    connectionLimit: int('DB_CONNECTION_LIMIT', 20),
     charset: 'utf8mb4_unicode_ci',
   },
 
@@ -91,6 +91,7 @@ const config = {
   },
 
   device: {
+    syncEnabled: bool('SYNC_ENABLED', false),
     syncIntervalMinutes: int('SYNC_INTERVAL_MINUTES', 5),
     timeoutMs: int('DEVICE_TIMEOUT_MS', 20000),
     clearLogAfterSync: bool('DEVICE_CLEAR_LOG_AFTER_SYNC', false),

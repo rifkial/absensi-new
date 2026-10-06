@@ -252,6 +252,7 @@
         '<div class="card-header"><div><h2 class="card-title">Sinkronisasi &amp; Perangkat</h2><p class="card-subtitle">Pengaturan polling &amp; PUSH mesin fingerprint</p></div></div>' +
         '<div class="card-body">' +
           '<div class="form-grid">' +
+            '<div class="field checkbox full"><input type="checkbox" id="sync_enabled"' + (toBool(s.sync_enabled) ? ' checked' : '') + '><label for="sync_enabled">Nyalakan Auto-sync (MATI = UI tidak macet)</label></div>' +
             field('Interval Sinkron (menit)', 'sync_interval_minutes', s.sync_interval_minutes, 'number', '', '1', '1440') +
             field('Timeout Mesin (ms)', 'device_timeout_ms', s.device_timeout_ms, 'number', '', '1000', '120000') +
             '<div class="field checkbox full"><input type="checkbox" id="device_clear_log_after_sync"' + (toBool(s.device_clear_log_after_sync) ? ' checked' : '') + '><label for="device_clear_log_after_sync">Hapus log di mesin setelah sinkron</label></div>' +
@@ -358,6 +359,7 @@
         holiday_sync_enabled: chkVal(body, '#holiday_sync_enabled'),
         holiday_sync_interval_days: numVal(body, '#holiday_sync_interval_days', 30),
         holiday_sync_years_ahead: numVal(body, '#holiday_sync_years_ahead', 1),
+        sync_enabled: chkVal(body, '#sync_enabled'),
         sync_interval_minutes: numVal(body, '#sync_interval_minutes', 5),
         device_timeout_ms: numVal(body, '#device_timeout_ms', 20000),
         device_clear_log_after_sync: chkVal(body, '#device_clear_log_after_sync'),

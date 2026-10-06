@@ -26,24 +26,25 @@ router.get(
     const to = toDate(req.query.to) || today();
     const from = addDays(to, -(rangeDays - 1));
 
-    const [summary, employeeStats, deviceStats, todayData, recentLogs] = await Promise.all([
-      attendance.summary({ from, to }),
-      employees.stats(),
-      db.queryAll(
-        `SELECT id, name, protocol, is_active, last_sync_at, last_sync_status, last_sync_message
-           FROM devices ORDER BY name`
-      ),
-      attendance.summary({ from: to, to }),
-      db.queryAll(
-        `SELECT l.id, l.log_time, l.log_state, l.verify_mode, e.name AS employee_name,
-                e.employee_code, e.device_user_id, d.name AS device_name
-           FROM attendance_logs l
-           LEFT JOIN employees e ON e.id = l.employee_id
-           LEFT JOIN devices d ON d.id = l.device_id
-          ORDER BY l.id DESC
-          LIMIT 12`
-      ),
-    ]);
+    // Serial, bukan paralel: tiap refresh dashboard = 1 koneksi bergantian,
+    // pool tidak habis walau banyak tab refresh bareng. Total tetap <100ms
+    // karena tiap query kecil (data harian, bukan agregat berat).
+    const summary = await attendance.summary({ from, to });
+    const employeeStats = await employees.stats();
+    const deviceStats = await db.queryAll(
+      `SELECT id, name, protocol, is_active, last_sync_at, last_sync_status, last_sync_message
+         FROM devices ORDER BY name`
+    );
+    const todayData = from === to ? summary : await attendance.summary({ from: to, to });
+    const recentLogs = await db.queryAll(
+      `SELECT l.id, l.log_time, l.log_state, l.verify_mode, e.name AS employee_name,
+              e.employee_code, e.device_user_id, d.name AS device_name
+         FROM attendance_logs l
+         LEFT JOIN employees e ON e.id = l.employee_id
+         LEFT JOIN devices d ON d.id = l.device_id
+        ORDER BY l.id DESC
+        LIMIT 12`
+    );
 
     res.json({
       ok: true,

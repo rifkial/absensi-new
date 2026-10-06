@@ -34,6 +34,8 @@
   var currentTab = 'leave';
   var currentMode = 'pending';
   var historyStatus = 'all';
+  var historyFrom = '';
+  var historyTo = '';
 
   var leaveRows = [];
   var reimburseRows = [];
@@ -362,12 +364,19 @@
     return '<div class="field"><label>' + label + '</label>' + control + '</div>';
   }
 
+  function historyQuery() {
+    var q = { status: 'all', limit: 500 };
+    if (historyFrom) q.from = historyFrom;
+    if (historyTo) q.to = historyTo;
+    return q;
+  }
+
   function loadData() {
     Promise.all([
       api.get('/employees/leaves/pending'),
       api.get('/employees/reimburses/pending'),
-      api.get('/employees/leaves/history?status=all&limit=300'),
-      api.get('/employees/reimburses/history?status=all&limit=300'),
+      api.get('/employees/leaves/history', historyQuery()),
+      api.get('/employees/reimburses/history', historyQuery()),
     ])
       .then(function (results) {
         leaveRows = results[0].data || [];
@@ -419,6 +428,10 @@
                   '>' + esc(f.label) + '</option>';
               }).join('') +
             '</select>' +
+            '<input type="date" id="pjFrom" value="' + esc(historyFrom) + '" title="Dari tanggal">' +
+            '<input type="date" id="pjTo" value="' + esc(historyTo) + '" title="Sampai tanggal">' +
+            '<button class="btn sm" id="pjApplyDate">Terapkan</button>' +
+            '<button class="btn sm" id="pjResetDate">Reset</button>' +
             '<div class="btn-group">' +
               '<button class="btn sm" id="pjPrint">Cetak</button>' +
               '<button class="btn sm" id="pjExcel">Excel</button>' +
@@ -449,6 +462,27 @@
       });
     }
 
+    var applyDate = document.getElementById('pjApplyDate');
+    if (applyDate) {
+      applyDate.addEventListener('click', function () {
+        var f = document.getElementById('pjFrom').value;
+        var t = document.getElementById('pjTo').value;
+        if (f && t && f > t) { App.toast('Rentang tanggal tidak valid: dari > sampai.', 'error'); return; }
+        historyFrom = f || '';
+        historyTo = t || '';
+        loadData();
+      });
+    }
+
+    var resetDate = document.getElementById('pjResetDate');
+    if (resetDate) {
+      resetDate.addEventListener('click', function () {
+        historyFrom = '';
+        historyTo = '';
+        loadData();
+      });
+    }
+
     var printBtn = document.getElementById('pjPrint');
     if (printBtn) printBtn.addEventListener('click', function () { window.print(); });
 
@@ -457,7 +491,10 @@
       excelBtn.addEventListener('click', function () {
         var tab = currentTab === 'reimburse' ? 'reimburse' : 'leave';
         var status = historyStatus === 'all' ? 'all' : historyStatus;
-        api.download('/employees/history/export/excel', { tab: tab, status: status, limit: 2000 })
+        var q = { tab: tab, status: status, limit: 2000 };
+        if (historyFrom) q.from = historyFrom;
+        if (historyTo) q.to = historyTo;
+        api.download('/employees/history/export/excel', q)
           .then(function (res) {
             var url = URL.createObjectURL(res.blob);
             var a = document.createElement('a');
@@ -696,7 +733,13 @@
         return r.review_note ? esc(r.review_note) : '<span class="faint">-</span>';
       } },
       { key: 'aksi', label: '', align: 'right', render: function (r) {
-        return '<button class="btn sm" data-hdetail="' + esc(r.id) + '">Detail</button>';
+        var btn = '<button class="btn sm" data-hdetail="' + esc(r.id) + '">Detail</button>';
+        if (r.status === 'approved' && isDinasRow(r)) {
+          btn += hasSpd(r)
+            ? ' <button class="btn sm primary" data-print-spd="' + esc(r.id) + '">Cetak Surat Dinas</button>'
+            : ' <button class="btn sm primary" data-spd="' + esc(r.id) + '">Surat Dinas</button>';
+        }
+        return btn;
       } },
     ];
 
@@ -710,6 +753,127 @@
         if (row) showLeaveDetail(row, true);
       });
     });
+
+    body.querySelectorAll('[data-spd]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        openTravelLetter(btn.getAttribute('data-spd'));
+      });
+    });
+
+    body.querySelectorAll('[data-print-spd]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        printTravelLetter(btn.getAttribute('data-print-spd'));
+      });
+    });
+  }
+
+  function isDinasRow(r) {
+    return r && (r.category === 'dinas' || r.leave_type === 'dinas_luar' || r.leave_type === 'dinas_dalam');
+  }
+
+  function hasSpd(r) {
+    return Boolean(r && String(r.travel_letter_no || '').trim());
+  }
+
+  /** Modal isi transport + nomor surat, lalu buka cetak SPD. */
+  function openTravelLetter(id) {
+    var row = findLeaveRow(id);
+    if (!row || !isDinasRow(row)) { App.toast('Surat hanya untuk pengajuan dinas.', 'error'); return; }
+    if (row.status !== 'approved') { App.toast('Surat hanya bisa dibuat setelah disetujui.', 'error'); return; }
+
+    App.modal({
+      title: 'Surat Perjalanan Dinas: ' + (row.employee_name || ''),
+      size: 'wide',
+      bodyHtml:
+        '<div class="form-grid">' +
+          '<div class="field"><label>Nomor Surat</label>' +
+            '<input type="text" id="spdNo" maxlength="60" value="' + esc(row.travel_letter_no || '') + '" placeholder="Otomatis bila kosong"></div>' +
+          '<div class="field"><label>Transportasi</label>' +
+            '<input type="text" id="spdTransport" maxlength="150" value="' + esc(row.transport || '') + '" placeholder="mis. Mobil dinas B 1234 CD"></div>' +
+        '</div>' +
+        '<div class="callout mt">Nomor kosong = otomatis <code>SPD/0001/MM/YYYY</code>. Transportasi opsional, bisa diubah kapan pun.</div>',
+      actions: [
+        { label: 'Batal' },
+        {
+          label: 'Simpan',
+          className: 'primary',
+          onClick: function (el) {
+            var payload = {
+              travel_letter_no: el.querySelector('#spdNo').value.trim(),
+              transport: el.querySelector('#spdTransport').value.trim(),
+            };
+            api.put('/employees/leaves/' + id + '/travel', payload)
+              .then(function (res) {
+                Object.assign(row, res.data || payload);
+                el.closeModal();
+                App.toast('Surat dinas tersimpan.', 'success');
+                loadData();
+                printTravelLetter(id);
+              })
+              .catch(function (err) { App.toast(err.message, 'error'); });
+            return false;
+          },
+        },
+        {
+          label: 'Cetak Tanpa Simpan',
+          onClick: function (el) {
+            el.closeModal();
+            printTravelLetter(id);
+            return false;
+          },
+        },
+      ],
+    });
+  }
+
+  /** Ambil data surat lalu cetak via jendela print khusus. */
+  function printTravelLetter(id) {
+    api.get('/employees/leaves/' + id + '/travel-letter')
+      .then(function (res) { printSpd(res.data); })
+      .catch(function (err) { App.toast(err.message, 'error'); });
+  }
+
+  function printSpd(d) {
+    var w = window.open('', '_blank', 'width=800,height=900');
+    if (!w) { App.toast('Popup diblokir browser. Izinkan popup untuk mencetak.', 'error'); return; }
+    var range = d.date_range || (d.start_date + (d.end_date && d.end_date !== d.start_date ? ' s/d ' + d.end_date : ''));
+    w.document.write(
+      '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><title>Surat Perjalanan Dinas</title>' +
+      '<style>body{font-family:Georgia,serif;margin:40px;color:#111}' +
+      '.kop{text-align:center;border-bottom:3px double #111;padding-bottom:12px;margin-bottom:20px}' +
+      '.kop h2{margin:0;font-size:22px}.kop p{margin:2px 0;font-size:13px}' +
+      'h3{text-align:center;text-decoration:underline;margin:10px 0 2px}' +
+      '.nobox{text-align:center;margin-bottom:18px}' +
+      'table{width:100%;border-collapse:collapse;margin:14px 0}td{padding:6px 8px;vertical-align:top;font-size:14px}' +
+      'td.k{width:180px}.sig{display:flex;justify-content:space-between;margin-top:36px;text-align:center}' +
+      '@media print{.noprint{display:none}}</style></head><body>' +
+      '<div class="kop"><h2>' + esc(d.company_name || 'Perusahaan') + '</h2>' +
+      '<p>Surat Perjalanan Dinas</p></div>' +
+      '<h3>SURAT PERJALANAN DINAS</h3>' +
+      '<div class="nobox">Nomor: ' + esc(d.travel_letter_no || '-') + '</div>' +
+      '<table>' +
+      spdRow('Nama', d.employee_name + (d.employee_code ? ' (' + d.employee_code + ')' : '')) +
+      spdRow('Unit Kerja', d.department_name || '-') +
+      spdRow('Jabatan', d.position_name || '-') +
+      spdRow('Jenis Dinas', d.subtype_label || d.leave_type || '-') +
+      spdRow('Tujuan', d.place || '-') +
+      spdRow('Tanggal', range) +
+      spdRow('Keperluan', d.reason || '-') +
+      spdRow('Transportasi', d.transport || '-') +
+      '</table>' +
+      '<p>Demikian surat tugas ini dibuat untuk dilaksanakan dengan penuh tanggung jawab.</p>' +
+      '<div class="sig"><div>Yang ditugaskan<br><br><br><br><b>' + esc(d.employee_name || '') + '</b></div>' +
+      '<div>Pemberi Tugas<br><br><br><br><b>' + esc(d.reviewer || 'HRD') + '</b></div></div>' +
+      '<div class="noprint" style="margin-top:24px;text-align:center">' +
+      '<button onclick="window.print()">Cetak</button></div>' +
+      '</body></html>'
+    );
+    w.document.close();
+    w.focus();
+  }
+
+  function spdRow(k, v) {
+    return '<tr><td class="k">' + esc(k) + '</td><td>: ' + esc(v || '-') + '</td></tr>';
   }
 
   function findLeaveRow(id) {
@@ -744,11 +908,42 @@
         label: 'Setujui',
         className: 'primary',
         onClick: function (el) {
-          reviewLeave(row.id, 'approved');
-          el.closeModal();
+          if (isDinasRow(row)) approveDinasWithTravel(el, row);
+          else { reviewLeave(row.id, 'approved'); el.closeModal(); }
           return false;
         },
       });
+    }
+    if (row.status === 'approved' && isDinasRow(row)) {
+      if (hasSpd(row)) {
+        actions.push({
+          label: 'Cetak Surat Dinas',
+          className: 'primary',
+          onClick: function (el) {
+            el.closeModal();
+            printTravelLetter(row.id);
+            return false;
+          },
+        });
+        actions.push({
+          label: 'Ubah Surat',
+          onClick: function (el) {
+            el.closeModal();
+            openTravelLetter(row.id);
+            return false;
+          },
+        });
+      } else {
+        actions.push({
+          label: 'Surat Dinas',
+          className: 'primary',
+          onClick: function (el) {
+            el.closeModal();
+            openTravelLetter(row.id);
+            return false;
+          },
+        });
+      }
     }
 
     App.modal({
@@ -760,6 +955,8 @@
           kv('Jenis', row.subtype_label || row.leave_type || '-') +
           kv('Tanggal', row.date_range || row.start_date) +
           kv('Tujuan', row.place || '-') +
+          kv('Transportasi', row.transport || '-') +
+          kv('No. Surat', row.travel_letter_no || '-') +
           kv('Status', row.status_label || row.status) +
           kv('Diajukan', row.created_at) +
           kv('Pemeriksa', row.reviewer || '-') +
@@ -771,6 +968,42 @@
             '<div class="callout">' + esc(row.review_note) + '</div></div>'
           : ''),
       actions: actions,
+    });
+  }
+
+  /** Setujui dinas sekaligus isi transport + nomor surat (opsional). */
+  function approveDinasWithTravel(modalEl, row) {
+    modalEl.closeModal();
+    App.modal({
+      title: 'Setujui Dinas: ' + (row.employee_name || ''),
+      bodyHtml:
+        '<div class="form-grid">' +
+          '<div class="field"><label>Nomor Surat (opsional)</label>' +
+            '<input type="text" id="apNo" maxlength="60" placeholder="Otomatis bila kosong"></div>' +
+          '<div class="field"><label>Transportasi (opsional)</label>' +
+            '<input type="text" id="apTransport" maxlength="150" placeholder="mis. Mobil dinas B 1234 CD"></div>' +
+        '</div>',
+      actions: [
+        { label: 'Batal' },
+        {
+          label: 'Setujui',
+          className: 'primary',
+          onClick: function (el) {
+            api.put('/employees/leaves/' + row.id + '/review', {
+              status: 'approved',
+              travel_letter_no: el.querySelector('#apNo').value.trim(),
+              transport: el.querySelector('#apTransport').value.trim(),
+            })
+              .then(function () {
+                App.toast('Pengajuan disetujui.', 'success');
+                el.closeModal();
+                loadData();
+              })
+              .catch(function (err) { App.toast(err.message, 'error'); });
+            return false;
+          },
+        },
+      ],
     });
   }
 

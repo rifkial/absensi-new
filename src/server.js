@@ -57,6 +57,11 @@ async function start() {
   mainServer = app.listen(config.server.port, config.server.host, () => {
     console.log(`  Web       : http://localhost:${config.server.port}`);
   });
+  // Request gantung (mesin timeout / DB macet) jangan pegang koneksi selamanya:
+  // bunuh socket-nya supaya browser retry, bukan spinner abadi.
+  mainServer.requestTimeout = 30000;
+  mainServer.headersTimeout = 35000;
+  mainServer.keepAliveTimeout = 5000;
   // Lacak koneksi terbuka (SSE/EventSource) supaya shutdown tidak gantung.
   trackConnections(mainServer);
   mainServer.on('error', (err) => {
@@ -71,8 +76,12 @@ async function start() {
   // 4) Server PUSH untuk mesin fingerprint.
   startPushServer();
 
-  // 5) Penjadwal sinkronisasi otomatis.
-  sync.startScheduler({ intervalMinutes: config.device.syncIntervalMinutes });
+  // 5) Penjadwal sinkronisasi otomatis (MATI default via SYNC_ENABLED=false).
+  if (config.device.syncEnabled) {
+    sync.startScheduler({ intervalMinutes: config.device.syncIntervalMinutes });
+  } else {
+    console.log('  [scheduler] Auto-sync MATI (SYNC_ENABLED=false). Sinkron manual via tombol UI.');
+  }
 
   console.log('='.repeat(64));
   console.log('  Server siap.');

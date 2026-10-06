@@ -56,6 +56,22 @@ router.get(
   })
 );
 
+/** Hidup/mati auto-sync tanpa restart (MATI default). */
+router.post(
+  '/scheduler',
+  auth.requirePermission('devices:write'),
+  wrap(async (req, res) => {
+    const enable = req.body?.enabled === true || req.body?.enabled === 'true' || req.body?.enabled === 1;
+    if (enable) {
+      sync.startScheduler();
+      res.json({ ok: true, data: sync.status(), message: 'Auto-sync DINYALAKAN.' });
+    } else {
+      sync.stopScheduler();
+      res.json({ ok: true, data: sync.status(), message: 'Auto-sync DIMATIKAN.' });
+    }
+  })
+);
+
 router.get(
   '/history',
   auth.requirePermission('devices:read'),
@@ -112,14 +128,30 @@ router.post(
   })
 );
 
+/**
+ * Sync manual jalan di background: mesin butuh detik-menit, UI langsung
+ * dibalas "dijadwalkan" + status bisa dipolling via GET /devices/sync-status.
+ * Tanpa ini tombol UI menggantung sampai mesin selesai merespons.
+ */
+function runSyncBackground(fn) {
+  setImmediate(() => {
+    fn().catch((err) => console.error('[sync] Background gagal:', err.message));
+  });
+}
+
 router.post(
   '/:id/sync',
   auth.requirePermission('devices:sync'),
   wrap(async (req, res) => {
-    const result = await sync.syncDeviceById(Number(req.params.id), {
-      regenerateDays: req.body?.regenerate_days ?? 1,
-    });
-    res.json({ ok: result.failed === 0, ...result });
+    if (sync.status().running) {
+      return res.status(202).json({ ok: true, queued: false, message: 'Sinkronisasi masih berjalan, coba lagi setelah selesai.', ...sync.status() });
+    }
+    runSyncBackground(() =>
+      sync.syncDeviceById(Number(req.params.id), {
+        regenerateDays: req.body?.regenerate_days ?? 1,
+      })
+    );
+    res.status(202).json({ ok: true, queued: true, message: 'Sinkronisasi berjalan di background.', ...sync.status() });
   })
 );
 
@@ -127,8 +159,13 @@ router.post(
   '/sync-all',
   auth.requirePermission('devices:sync'),
   wrap(async (req, res) => {
-    const result = await sync.syncAll({ regenerateDays: req.body?.regenerate_days ?? 1 });
-    res.json({ ok: result.failed === 0, ...result });
+    if (sync.status().running) {
+      return res.status(202).json({ ok: true, queued: false, message: 'Sinkronisasi masih berjalan, coba lagi setelah selesai.', ...sync.status() });
+    }
+    runSyncBackground(() =>
+      sync.syncAll({ regenerateDays: req.body?.regenerate_days ?? 1 })
+    );
+    res.status(202).json({ ok: true, queued: true, message: 'Sinkronisasi berjalan di background.', ...sync.status() });
   })
 );
 

@@ -18,15 +18,33 @@ function sseSend(res, event, data) {
 }
 
 function addClient(userId, res) {
-  if (!clients.has(userId)) clients.set(userId, new Set());
-  clients.get(userId).add(res);
+  const id = Number(userId);
+  if (!clients.has(id)) clients.set(id, new Set());
+  const set = clients.get(id);
+  for (const old of set) {
+    if (old !== res) {
+      try {
+        old.end();
+      } catch {
+        // abaikan
+      }
+      set.delete(old);
+    }
+  }
+  set.add(res);
 }
 
 function removeClient(userId, res) {
-  const set = clients.get(userId);
+  const set = clients.get(Number(userId));
   if (!set) return;
   set.delete(res);
-  if (set.size === 0) clients.delete(userId);
+  if (set.size === 0) clients.delete(Number(userId));
+}
+
+function clientCount() {
+  let n = 0;
+  for (const set of clients.values()) n += set.size;
+  return n;
 }
 
 /** Tutup semua koneksi SSE (dipakai saat shutdown supaya server bisa mati). */
@@ -207,6 +225,7 @@ module.exports = {
   addClient,
   removeClient,
   closeAll,
+  clientCount,
   pushToUser,
   sseSend,
   notifyUsers,

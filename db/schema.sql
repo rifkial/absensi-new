@@ -151,6 +151,10 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   end_date     DATE         NOT NULL,
   reason       VARCHAR(500) NULL,
   attachment   VARCHAR(255) NULL,
+  transport    VARCHAR(150) NULL
+               COMMENT 'transportasi dinas, mis. mobil dinas B 1234 CD',
+  travel_letter_no VARCHAR(60) NULL
+               COMMENT 'nomor surat perjalanan dinas',
   status       ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
   reviewed_by  INT UNSIGNED NULL,
   reviewed_at  DATETIME     NULL,

@@ -49,6 +49,8 @@ const DEFAULTS = {
   holiday_sync_last_at: '',
 
   // perangkat
+  // MATI default: auto-sync berebut pool dengan UI. Nyalakan manual bila perlu.
+  sync_enabled: 'false',
   sync_interval_minutes: '5',
   device_timeout_ms: '20000',
   device_clear_log_after_sync: 'false',
@@ -251,6 +253,7 @@ function normalize(payload = {}) {
   }
 
   // perangkat
+  boolKey('sync_enabled');
   intText('sync_interval_minutes', 1, 1440, 5);
   intText('device_timeout_ms', 1000, 120000, 20000);
   boolKey('device_clear_log_after_sync');

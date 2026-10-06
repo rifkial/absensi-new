@@ -23,3 +23,16 @@ test('SSE client add/remove bersih', () => {
   realtime.removeClient(12345, fake);
   assert.equal(realtime.pushToUser(12345, { title: 'halo' }), 0);
 });
+
+test('satu user satu koneksi, lama ditutup', () => {
+  let ended = 0;
+  const a = { write: () => {}, end: () => { ended += 1; } };
+  const b = { write: () => {}, end: () => {} };
+  realtime.addClient(54321, a);
+  assert.equal(realtime.clientCount(), 1);
+  realtime.addClient(54321, b);
+  assert.equal(ended, 1);
+  assert.equal(realtime.clientCount(), 1);
+  realtime.removeClient(54321, b);
+  assert.equal(realtime.clientCount(), 0);
+});

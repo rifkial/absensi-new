@@ -1,20 +1,25 @@
 # Absensi Fingerprint
 
-Aplikasi absensi fingerprint (Node.js + MySQL) dengan sinkronisasi otomatis dari mesin ZKTeco / PUSH.
+Aplikasi absensi fingerprint (Node.js + MySQL) dengan sinkronisasi mesin ZKTeco / PUSH.
 
 Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 
 ## Fitur
 
 - Karyawan, departemen, jabatan, shift, jadwal
-- Tarik log otomatis dari mesin (polling) + mode PUSH (ADMS/icLock)
-- Rekap harian/bulanan, telat, lembur, izin/sakit/cuti, alpa, hari libur
+- Tarik log dari mesin (polling TCP 4370) + mode PUSH (ADMS/icLock) + impor CSV
+- Rekap harian/bulanan, telat, lembur, izin/sakit/cuti, dinas dalam/luar, alpa, hari libur
 - Laporan 7 format + ekspor Excel
-- Hari libur nasional (UI + sinkronisasi)
-- Portal mandiri karyawan (`role employee`)
-- Notifikasi email SMTP + WhatsApp gateway
+- Hari libur nasional (UI + sinkronisasi API)
+- Pengajuan cuti/izin/dinas + reimburse (filter rentang tanggal, impor/ekspor Excel)
+- Surat Perjalanan Dinas (nomor + transportasi, cetak) untuk dinas yang disetujui
+- Portal mandiri karyawan (`role employee`): rekap, pengajuan, check-in dinas GPS + selfie
+- Auto-sync mesin MATI default (tombol hidup/mati di menu Perangkat, tanpa restart)
+- Sync manual jalan di background (202 + polling status, UI tidak menggantung)
+- Notifikasi realtime SSE + bell (dinas/reimburse), email SMTP + WhatsApp gateway
+- Peta Leaflet lokal (tanpa CDN luar, tile/search via proxy server)
 - Audit log, throttle login, JWT auth
-- Frontend statis di `public/` (tanpa build)
+- Frontend statis di `public/` (tanpa build, tanpa bundler)
 
 ## Teknologi
 
@@ -23,18 +28,19 @@ Node.js >= 18, Express 4, MySQL 5.7+ / MariaDB 10.4+ (XAMPP), JWT, bcryptjs, day
 ## Struktur
 
 ```
-src/server.js        # entry: 2 listener (web 3000 + PUSH 3001) + scheduler sync
-src/app.js           # Express app, REST API, static frontend
+src/server.js        # entry: 2 listener (web 3000 + PUSH 3001) + scheduler sync (MATI default)
+src/app.js           # Express app, REST API, static frontend, proxy geo (tile/search)
 src/config.js        # baca .env
 src/db/              # pool, migrate, seed, upgrades
-src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me
-src/services/        # attendance, reports, sync, notify, holidays
+src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications
+src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels
 src/devices/         # adapter: zkteco-tcp, pushhttp, csv
-src/middleware/      # auth (RBAC), error
+src/middleware/      # auth (RBAC + cache user 30s), error
 db/schema.sql        # skema idempoten
-public/              # UI statis (index.html, css/, js/pages/)
+public/              # UI statis (index.html, css/, js/core+app+pages/, vendor/leaflet)
+public/vendor/leaflet/ # Leaflet lokal (tanpa CDN luar)
 tools/               # probe, scan, sync-once, cek-*
-test/                # node:test
+test/                # node:test (121 tes: shifts, attendance, travelLetter, realtime, dutyRange, ...)
 ```
 
 ## Syarat
@@ -74,11 +80,12 @@ Salin `.env.example` ke `.env`. Kunci penting:
 |---|---|
 | `PORT` / `HOST` | web UI + API (default `3000` / `0.0.0.0`) |
 | `PUSH_PORT` | server ADMS mesin (default `3001`, samakan dengan `PORT` untuk gabung) |
-| `DB_*` | host, port, user, password, nama DB |
+| `DB_*` | host, port, user, password, nama DB (`DB_CONNECTION_LIMIT` default `20`) |
 | `JWT_SECRET` | wajib >= 32 karakter acak sebelum produksi |
 | `TZ` | `Asia/Jakarta` (penting untuk shift & telat) |
-| `SYNC_INTERVAL_MINUTES` | polling otomatis mesin |
-| `DEVICE_TIMEOUT_MS` | timeout tarik log |
+| `SYNC_ENABLED` | auto-sync mesin, default `false` (MATI). Nyalakan manual via tombol di menu Perangkat / `POST /api/devices/scheduler` |
+| `SYNC_INTERVAL_MINUTES` | polling otomatis mesin (bila `SYNC_ENABLED=true`, default `5`) |
+| `DEVICE_TIMEOUT_MS` | timeout tarik log (default `20000`) |
 | `DEVICE_CLEAR_LOG_AFTER_SYNC` | `true` = hapus log di mesin setelah sync |
 | `ATTENDANCE_CUTOFF_TIME`, `DEFAULT_LATE_TOLERANCE`, `MAX_DAILY_WORK_MINUTES` | aturan rekap |
 | `MAIL_*` | SMTP (aktif bila `MAIL_ENABLED=true`) |
@@ -90,15 +97,15 @@ Salin `.env.example` ke `.env`. Kunci penting:
 | Perintah | Fungsi |
 |---|---|
 | `npm start` | jalan produksi |
-| `npm run dev` | jalan + `--watch` |
+| `npm run dev` | jalan + `--watch` (auto-reload tiap simpan, tanpa restart manual) |
 | `npm run setup` | `migrate + seed` |
-| `npm run migrate` | jalankan `db/schema.sql` (idempoten) |
-| `npm run seed` | admin + departemen + jabatan + shift contoh |
+| `npm run migrate` | jalankan `db/schema.sql` + `src/db/upgrades.js` (idempoten) |
+| `npm run seed` | admin + karyawan demo (NIK `001-005`, PIN `1-5`) + shift/jadwal contoh |
 | `npm run sync` | satu siklus sync lalu keluar (`--force`, `--days N`, `--device ID`) |
 | `npm run probe -- <ip> [port] [pass]` | tes koneksi ke satu mesin |
 | `npm run scan -- [prefix]` | pindai subnet cari mesin (contoh `192.168.1`) |
-| `npm test` | `node --test test/**/*.test.js` |
-| `npm run lint` | eslint |
+| `npm test` / `npm run build` | `node --test test/**/*.test.js` (121 tes) |
+| `npm run lint` | eslint (butuh `eslint.config.js`, lihat migrasi ESLint v9) |
 
 ## Peran & izin
 
@@ -118,7 +125,7 @@ Protokol di `src/devices/`:
 - `pushhttp` — mesin PUSH/ADMS ke `http://<ip-server>:3001/iclock/...`
 - `csv` — impor file CSV
 
-Alur: daftarkan mesin di menu Perangkat → tes koneksi → sync (otomatis per `SYNC_INTERVAL_MINUTES` atau manual / `npm run sync`). `device_user_id` (PIN mesin) harus cocok dengan data karyawan, yang tak cocok masuk log mentah `unmatched`.
+Alur: daftarkan mesin di menu Perangkat → tes koneksi → sync manual (tombol Sync / `npm run sync`) atau nyalakan auto-sync via tombol di menu Perangkat (`POST /api/devices/scheduler {enabled:true}`). Auto-sync MATI default (`SYNC_ENABLED=false`) supaya UI tidak berebut pool DB. Sync manual jalan di background: server balas `202 queued` langsung, status dipolling via `GET /api/devices/status`. `device_user_id` (PIN mesin) harus cocok dengan data karyawan, yang tak cocok masuk log mentah `unmatched`.
 
 Cek cepat dari terminal:
 
@@ -129,6 +136,13 @@ npm run scan -- 192.168.1
 ```
 
 Untuk mode PUSH, isi IP server + `PUSH_PORT` di menu ADMS mesin. Bila `PUSH_AUTH_TOKEN` diisi, mesin wajib kirim token sama.
+
+## Pengajuan & surat dinas
+
+- Pengajuan cuti/izin/dinas + reimburse di menu Pengajuan (`/#/pengajuan`): tab pending/riwayat, filter status + rentang tanggal, impor/ekspor Excel.
+- Dinas yang disetujui bisa dilengkapi transportasi + nomor surat (`PUT /api/employees/leaves/:id/travel`), lalu cetak Surat Perjalanan Dinas (`GET /api/employees/leaves/:id/travel-letter`). Tombol "Surat Dinas" / "Cetak Surat Dinas" muncul otomatis di riwayat + detail.
+- Karyawan (`role employee`) mengajukan via Portal Saya + check-in dinas GPS + selfie (wajib lokasi + foto, check-out wajib selfie).
+- GPS/kamera butuh secure context: di LAN `http://` browser memblokir geolokasi. Solusi: `chrome://flags > Insecure origins treated as secure > http://<ip-server>:3000 > Enabled > Relaunch`, atau pakai HTTPS. Fallback: isi Lat/Lng manual + upload file + peta Leaflet lokal.
 
 ## Laporan
 
@@ -147,17 +161,41 @@ Unduh Excel: `GET /api/reports/export/excel?...` (butuh `reports:export`)
 
 ## API ringkas
 
-Semua butuh `Authorization: Bearer <jwt>` kecuali login & health.
+Semua butuh `Authorization: Bearer <jwt>` kecuali login & health. SSE stream pakai token via query (`/api/notifications/stream?token=`).
 
 ```
 GET  /health
 POST /api/auth/login
+GET  /api/auth/me, /api/auth/meta
 GET  /api/employees, /api/shifts, /api/holidays, /api/devices
+GET  /api/attendance/dashboard?days=14
+GET  /api/devices/status
+POST /api/devices/scheduler {enabled:true|false}   # hidup/mati auto-sync tanpa restart
+POST /api/devices/:id/sync                         # 202 background + polling /devices/status
+POST /api/devices/sync-all                          # 202 background
+GET  /api/employees/leaves/history?status=all&from=&to=&limit=
+GET  /api/employees/reimburses/history?status=all&from=&to=&limit=
+PUT  /api/employees/leaves/:id/review               # {status, review_note, force, transport?, travel_letter_no?}
+PUT  /api/employees/leaves/:id/travel               # {transport, travel_letter_no} (dinas approved)
+GET  /api/employees/leaves/:id/travel-letter        # data surat siap cetak
+GET  /api/employees/history/export/excel?tab=leave&status=all&from=&to=
+GET  /api/reports/preview?format=rekap_harian&from=&to=
+GET  /api/notifications, /api/notifications/unread-count
+GET  /api/notifications/stream?token=               # SSE (1 koneksi per user, lama ditutup otomatis)
+GET  /api/geo/tiles/{z}/{x}/{y}.png, /api/geo/search?q=
 GET  /api/attendance, /api/reports/preview, /api/audit, /api/me
-POST /api/devices/:id/sync
 ```
 
 Daftar lengkap: lihat `src/routes/*.js`.
+
+## Stabilitas (anti-overload refresh)
+
+- Auto-sync MATI default + kickoff 30 detik + sunyi saat idle (tanpa perangkat jatuh tempo).
+- Dashboard query serial (1 koneksi bergantian), auth cache user 30 detik, `notify.status()` cache 30 detik.
+- Pool DB: limit `20`, antrean `50` (langsung 503, bukan gantung), `connectTimeout` 5 detik.
+- Server: `requestTimeout` 30 detik, SSE stream dikecualikan (`setTimeout(0)`) + max 1 koneksi per user.
+- Frontend: boot kunci ganda, meta cache 60 detik, request GET sama didedupe (1 flight), dashboard batalkan request basi via `AbortController`, SSE lama ditutup dulu.
+- Bila UI blank setelah spam refresh: hard refresh `Ctrl+Shift+R` sekali (muat JS baru), lalu refresh normal.
 
 ## Tools
 
@@ -166,6 +204,7 @@ Daftar lengkap: lihat `src/routes/*.js`.
 ## Produksi
 
 1. `NODE_ENV=production`, `JWT_SECRET` acak >= 32 char
-2. Ganti password `admin`
+2. Ganti password `admin` (default `admin123`)
 3. Batasi akses port `3001` hanya dari IP mesin
 4. Jalankan di balik reverse proxy + backup DB rutin
+5. Nyalakan auto-sync (`SYNC_ENABLED=true` / tombol Perangkat) hanya bila mesin stabil di LAN

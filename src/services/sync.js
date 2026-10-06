@@ -122,11 +122,16 @@ async function runCycle({ only = null, force = false, minIntervalMinutes = null,
   summary.finished_at = new Date().toISOString();
   lastCycle = summary;
 
-  const okCount = summary.devices.filter((d) => d.ok).length;
-  console.log(
-    `[sync] Siklus #${summary.cycle} selesai dalam ${summary.duration_ms}ms - ` +
-      `${okCount}/${summary.devices.length} perangkat OK, ${summary.inserted} log baru, ${summary.failed} gagal.`
-  );
+  // Jangan berisik bila tidak ada kerjaan (0 perangkat jatuh tempo):
+  // log tiap 5 menit mengganggu terminal tanpa info baru.
+  const idle = summary.devices.length === 0 && summary.inserted === 0 && summary.failed === 0 && !summary.holidays;
+  if (!idle) {
+    const okCount = summary.devices.filter((d) => d.ok).length;
+    console.log(
+      `[sync] Siklus #${summary.cycle} selesai dalam ${summary.duration_ms}ms - ` +
+        `${okCount}/${summary.devices.length} perangkat OK, ${summary.inserted} log baru, ${summary.failed} gagal.`
+    );
+  }
 
   return summary;
 }
@@ -165,15 +170,19 @@ async function syncAll(options = {}) {
 }
 
 /** Nyalakan penjadwal otomatis. */
+let kickoff = null;
 function startScheduler({ intervalMinutes = config.device.syncIntervalMinutes } = {}) {
   if (timer) return timer;
 
-  // Jalankan sekali shortly setelah server menyala, lalu interval.
-  const kickoff = setTimeout(() => {
+  // Kickoff ditunda 30 detik supaya load awal / refresh pertama tidak
+  // berebut pool DB dengan siklus sync. Siklus sendiri hanya jalan bila
+  // ada perangkat jatuh tempo; tanpa perangkat = idle, tanpa rekap.
+  kickoff = setTimeout(() => {
+    kickoff = null;
     runCycle({ minIntervalMinutes: intervalMinutes }).catch((err) => {
       console.error('[scheduler] Error:', err.message);
     });
-  }, 5000);
+  }, 30000);
 
   timer = setInterval(() => {
     runCycle({ minIntervalMinutes: intervalMinutes }).catch((err) => {
@@ -185,13 +194,17 @@ function startScheduler({ intervalMinutes = config.device.syncIntervalMinutes } 
   kickoff.unref?.();
 
   console.log(
-    `[scheduler] Penjadwal aktif: Sinkron tiap ${intervalMinutes} menit, rekap ${config.attendance.backfillDays} hari.`
+    `[scheduler] Penjadwal aktif: Sinkron tiap ${intervalMinutes} menit bila ada perangkat jatuh tempo, rekap 1 hari.`
   );
 
   return timer;
 }
 
 function stopScheduler() {
+  if (kickoff) {
+    clearTimeout(kickoff);
+    kickoff = null;
+  }
   if (timer) {
     clearInterval(timer);
     timer = null;
@@ -201,6 +214,7 @@ function stopScheduler() {
 
 function status() {
   return {
+    enabled: timer !== null,
     running,
     cycle_count: cycleCount,
     interval_minutes: config.device.syncIntervalMinutes,

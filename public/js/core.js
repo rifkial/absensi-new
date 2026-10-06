@@ -306,6 +306,12 @@ belum: 'Belum Absen',
   ApiError.prototype = Object.create(Error.prototype);
   ApiError.prototype.constructor = ApiError;
 
+  var inFlight = {};
+
+  function dedupeKey(method, path, query) {
+    return method + ' ' + path + ' ' + JSON.stringify(query || null);
+  }
+
   var api = {
     token: storage.get(TOKEN_KEY),
 
@@ -340,6 +346,12 @@ belum: 'Belum Absen',
 
     request: function (method, path, options) {
       var opts = options || {};
+      // Refresh spam 4x = request GET sama numpuk. Satukan: yang sama
+      // ikut promise yang sedang jalan, server cuma terima 1.
+      var shared = method === 'GET' && opts.body === undefined && !opts.signal && !opts.raw;
+      var key = shared ? dedupeKey(method, path, opts.query) : null;
+      if (shared && inFlight[key]) return inFlight[key];
+
       var url = API_BASE + path + (opts.query ? toQuery(opts.query) : '');
 
       var headers = { Accept: 'application/json' };
@@ -357,53 +369,70 @@ belum: 'Belum Absen',
       if (opts.body !== undefined) {
         init.body = opts.body instanceof FormData ? opts.body : JSON.stringify(opts.body);
       }
-      if (opts.signal) init.signal = opts.signal;
-      else if (typeof AbortController === 'function') {
-        init.signal = AbortSignal.timeout(opts.raw ? DOWNLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
-      }
 
-      return fetch(url, init).then(function (res) {
-        var contentType = res.headers.get('content-type') || '';
+      var retries = 0;
 
-        if (opts.raw) {
-          if (!res.ok) {
-            return res.text().then(function (text) {
-              throw new ApiError('Gagal mengunduh file (' + res.status + ').', res.status);
+      function attempt(left) {
+        if (opts.signal) init.signal = opts.signal;
+        else if (typeof AbortController === 'function') {
+          init.signal = AbortSignal.timeout(opts.raw ? DOWNLOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS);
+        }
+
+        return fetch(url, init).then(function (res) {
+          var contentType = res.headers.get('content-type') || '';
+
+          if (opts.raw) {
+            if (!res.ok) {
+              return res.text().then(function () {
+                throw new ApiError('Gagal mengunduh file (' + res.status + ').', res.status);
+              });
+            }
+            return res.blob().then(function (blob) {
+              return { blob: blob, filename: filenameFromDisposition(res) };
             });
           }
-          return res.blob().then(function (blob) {
-            return { blob: blob, filename: filenameFromDisposition(res) };
-          });
-        }
 
-        if (contentType.indexOf('application/json') === -1) {
-          if (!res.ok) throw new ApiError('Server menolak permintaan (' + res.status + ').', res.status);
-          return res.text();
-        }
-
-        return res.json().then(function (body) {
-          if (!res.ok || body.ok === false) {
-            var err = (body && body.error) || {};
-            throw new ApiError(err.message || 'Permintaan gagal (' + res.status + ').', res.status, err.details);
+          if (contentType.indexOf('application/json') === -1) {
+            if (!res.ok) throw new ApiError('Server menolak permintaan (' + res.status + ').', res.status);
+            return res.text();
           }
-          return body;
-        });
-      }).catch(function (err) {
-        if (err instanceof ApiError) throw err;
 
-        if (err && err.name === 'AbortError') {
-          if (opts.raw) throw new ApiError('Unduhan dibatalkan / terlalu lama.', 0);
-          throw new ApiError('Permintaan terlalu lama (timeout). Periksa koneksi ke server.', 0);
-        }
-        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-          throw new ApiError('Tidak ada koneksi ke server.', 0);
-        }
-        throw new ApiError('Tidak bisa menghubungi server. Pastikan server aplikasi berjalan.', 0);
-      });
+          return res.json().then(function (body) {
+            if (!res.ok || body.ok === false) {
+              var err = (body && body.error) || {};
+              throw new ApiError(err.message || 'Permintaan gagal (' + res.status + ').', res.status, err.details);
+            }
+            return body;
+          });
+        }).catch(function (err) {
+          if (err instanceof ApiError) throw err;
+          if (left > 0) return attempt(left - 1);
+
+          if (err && err.name === 'AbortError') {
+            if (opts.raw) throw new ApiError('Unduhan dibatalkan / terlalu lama.', 0);
+            throw new ApiError('Permintaan terlalu lama (timeout). Periksa koneksi ke server.', 0);
+          }
+          if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+            throw new ApiError('Tidak ada koneksi ke server.', 0);
+          }
+          throw new ApiError('Tidak bisa menghubungi server. Pastikan server aplikasi berjalan.', 0);
+        });
+      }
+
+      var pending = attempt(retries);
+      if (shared) {
+        inFlight[key] = pending;
+        pending.then(clear, clear);
+      }
+      function clear() { if (inFlight[key] === pending) delete inFlight[key]; }
+      return pending;
     },
 
-    get: function (path, query) {
-      return this.request('GET', path, { query: query });
+    get: function (path, query, extra) {
+      var o = { query: query };
+      if (extra && extra.signal) o.signal = extra.signal;
+      if (extra && extra.raw) o.raw = extra.raw;
+      return this.request('GET', path, o);
     },
     post: function (path, body) {
       return this.request('POST', path, { body: body === undefined ? {} : body });

@@ -19,7 +19,10 @@ function getPool() {
       database: config.db.database,
       waitForConnections: true,
       connectionLimit: config.db.connectionLimit,
-      queueLimit: 0,
+      // Antrean dibatasi: refresh spam langsung 503, bukan nunggu abadi
+      // sampai browser timeout. Frontend retry 1x menutupinya.
+      queueLimit: 50,
+      connectTimeout: 5000,
       charset: config.db.charset,
       // Data absensi memakai waktu dinding (wall clock) lokal, bukan UTC.
       // Kolom DATE/DATETIME/TIMESTAMP dikembalikan sebagai string apa adanya

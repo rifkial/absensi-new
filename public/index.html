@@ -32,21 +32,9 @@
   <script src="/js/pages/employee.js"></script>
   <script src="/js/pages/pengajuan.js"></script>
   <script>
-    // Hapus layar boot setelah modul selesai dimuat.
-    (function () {
-      function clearBoot() {
-        var boot = document.getElementById('bootScreen');
-        if (boot && boot.parentNode) boot.parentNode.removeChild(boot);
-      }
-
-      if (document.readyState === 'complete') {
-        clearBoot();
-      } else {
-        window.addEventListener('load', function () { setTimeout(clearBoot, 100); });
-        // Jaring pengaman bila ada skrip yang gagal dimuat.
-        setTimeout(clearBoot, 4000);
-      }
-    })();
+    // Layar boot dihapus oleh renderShell/renderLogin via body.innerHTML.
+    // Tanpa auto-hapus: refresh spam + API lambat = layar putih kosong.
+    // Spinner tetap = loading, bukan blank.
   </script>
 </body>
 </html>

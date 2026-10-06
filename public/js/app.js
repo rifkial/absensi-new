@@ -148,9 +148,16 @@
     });
   }
 
+  var metaStamp = 0;
+
   function loadMeta() {
+    if (Date.now() - metaStamp < 60000 && App.state.meta && App.state.meta.departments) {
+      return Promise.resolve(App.state.meta);
+    }
     return api.get('/auth/meta').then(function (res) {
       App.state.meta = res.data || { departments: [], positions: [], shifts: [] };
+      metaStamp = Date.now();
+      return App.state.meta;
     }).catch(function () {
       App.state.meta = { departments: [], positions: [], shifts: [] };
     });
@@ -255,11 +262,14 @@
     startClock();
   }
 
+  var notifSource = null;
+
   /** Bell + SSE notifikasi dinas/reimburse. */
   function setupNotifications() {
     var bell = document.getElementById('btnNotifBell');
     var badge = document.getElementById('notifBadge');
-    if (!bell || !badge || bell._notifBound) return;
+    if (!bell || !badge) return;
+    if (bell._notifBound) return;
     bell._notifBound = true;
 
     function setBadge(n) {
@@ -318,8 +328,11 @@
     });
 
     // SSE realtime: EventSource tanpa header, token via query.
+    // Tutup koneksi lama dulu supaya refresh/navigasi tidak menumpuk socket.
     try {
+      if (notifSource) { notifSource.close(); notifSource = null; }
       var src = new EventSource('/api/notifications/stream?token=' + encodeURIComponent(api.token));
+      notifSource = src;
       src.addEventListener('notify', function (ev) {
         var data = {};
         try { data = JSON.parse(ev.data); } catch (e) {}
@@ -511,7 +524,10 @@
 
   // ------------------------------------------------------------------ Render
 
+  var pageSeq = 0;
+
   function renderPage() {
+    var seq = ++pageSeq;
     var route = currentRoute();
     var page = PAGES[route] || PAGES.dashboard;
 
@@ -562,12 +578,16 @@
     });
   }
 
+  var booting = false;
+
   function boot() {
+    if (booting) return;
     if (!api.isLoggedIn()) {
       renderLogin();
       return;
     }
 
+    booting = true;
     // Validasi token masih valid sebelum menampilkan UI.
     loadPermissions()
       .then(function () {
@@ -587,7 +607,8 @@
         }
         renderShell();
         renderPage();
-      });
+      })
+      .then(function () { booting = false; });
   }
 
   window.addEventListener('hashchange', function () {

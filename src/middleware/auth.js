@@ -101,6 +101,16 @@ async function login(username, password) {
   };
 }
 
+/** Cache user per token 30 detik supaya refresh spam tidak menghabiskan pool. */
+const userCache = new Map();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of userCache) {
+    if (now - entry.at > 30000) userCache.delete(key);
+  }
+}, 60000).unref?.();
+
 /** Middleware: wajib login. */
 const requireAuth = asyncHandler(async (req, res, next) => {
   const header = req.headers.authorization || '';
@@ -118,12 +128,21 @@ const requireAuth = asyncHandler(async (req, res, next) => {
   }
 
   // Pastikan akun masih aktif (akun bisa dinonaktifkan saat sesi berjalan).
-  const user = await db.queryOne(
-    'SELECT id, username, full_name, role, employee_id, is_active FROM app_users WHERE id = ?',
-    [payload.sub]
-  );
+  const cached = userCache.get(token);
+  let user = cached && Date.now() - cached.at < 30000 ? cached.user : null;
+  if (!user) {
+    user = await db.queryOne(
+      'SELECT id, username, full_name, role, employee_id, is_active FROM app_users WHERE id = ?',
+      [payload.sub]
+    );
+    if (user) {
+      if (userCache.size > 500) userCache.clear();
+      userCache.set(token, { user, at: Date.now() });
+    }
+  }
 
   if (!user || !user.is_active) {
+    userCache.delete(token);
     throw unauthorized('Akun tidak ditemukan atau sudah dinonaktifkan.');
   }
 

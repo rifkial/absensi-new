@@ -9,6 +9,8 @@ const { wrap } = require('../middleware/error');
 const { badRequest, notFound } = require('../utils/errors');
 const employees = require('../services/employees');
 const attendance = require('../services/attendance');
+const travelLetter = require('../services/travelLetter');
+const settingsService = require('../services/settings');
 const leaveCatalog = require('../services/leaveCatalog');
 const leaveQuota = require('../services/leaveQuota');
 const audit = require('../services/audit');
@@ -447,10 +449,23 @@ router.put(
       if (!check.ok) throw badRequest(check.message);
     }
 
+    const travel = travelLetter.normalizeTravel(req.body || {});
+    const hasTravel = Object.keys(travel).length > 0;
+    if (hasTravel && !travelLetter.isDinas(before)) {
+      throw badRequest('Transportasi / nomor surat hanya untuk pengajuan dinas.');
+    }
+
     const result = await db.execute(
       'UPDATE leave_requests SET status = ?, reviewed_by = ?, reviewed_at = NOW(), review_note = ? WHERE id = ?',
       [decision, req.user.id, req.body?.review_note || null, leaveId]
     );
+    if (hasTravel) {
+      const keys = Object.keys(travel);
+      await db.execute(
+        `UPDATE leave_requests SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
+        [...keys.map((k) => travel[k]), leaveId]
+      );
+    }
 
     if (result.affectedRows === 0) throw notFound('Pengajuan tidak ditemukan.');
 
@@ -513,6 +528,73 @@ router.put(
     }
 
     res.json({ ok: true, data: row });
+  })
+);
+
+/** Update transportasi + nomor surat dinas (khusus approved). */
+router.put(
+  '/leaves/:leaveId/travel',
+  auth.requirePermission('attendance:write'),
+  wrap(async (req, res) => {
+    const leaveId = Number(req.params.leaveId);
+    const row = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [leaveId]);
+    travelLetter.assertApprovable(row);
+
+    const travel = travelLetter.normalizeTravel(req.body || {});
+    if (Object.keys(travel).length === 0) throw badRequest('transport / travel_letter_no wajib diisi.');
+
+    const keys = Object.keys(travel);
+    await db.execute(
+      `UPDATE leave_requests SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`,
+      [...keys.map((k) => travel[k]), leaveId]
+    );
+
+    await audit.recordChange({
+      userId: req.user.id,
+      ip: audit.ipOf(req),
+      action: 'leave.travel',
+      entity: 'leave_requests',
+      entityId: leaveId,
+      before: { transport: row.transport, travel_letter_no: row.travel_letter_no },
+      after: travel,
+      detail: { employee_id: row.employee_id },
+    });
+
+    const updated = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [leaveId]);
+    res.json({ ok: true, data: decorateLeave(updated) });
+  })
+);
+
+/** Data surat perjalanan dinas siap cetak (khusus approved). */
+router.get(
+  '/leaves/:leaveId/travel-letter',
+  auth.requirePermission('attendance:read'),
+  wrap(async (req, res) => {
+    const leaveId = Number(req.params.leaveId);
+    const row = await db.queryOne(
+      `SELECT lr.*, e.name AS employee_name, e.employee_code, e.phone,
+              d.name AS department_name, p.name AS position_name,
+              u.full_name AS reviewer_full_name, u.username AS reviewer_name
+         FROM leave_requests lr
+         JOIN employees e ON e.id = lr.employee_id
+         LEFT JOIN departments d ON d.id = e.department_id
+         LEFT JOIN positions p ON p.id = e.position_id
+         LEFT JOIN app_users u ON u.id = lr.reviewed_by
+        WHERE lr.id = ?`,
+      [leaveId]
+    );
+    travelLetter.assertApprovable(row);
+
+    const settings = await settingsService.getAll();
+    res.json({
+      ok: true,
+      data: {
+        ...decorateLeave(row),
+        travel_letter_no: row.travel_letter_no || travelLetter.defaultLetterNo(row.id, row.start_date),
+        company_name: settings.company_name || '',
+        reviewer: row.reviewer_full_name || row.reviewer_name || '',
+      },
+    });
   })
 );
 
@@ -596,6 +678,16 @@ function leaveHistoryFilter(query = {}) {
     where.push('lr.employee_id = ?');
     params.push(Number(query.employee_id));
   }
+  const from = toDate(query.from);
+  const to = toDate(query.to);
+  if (from && to && from > to) throw badRequest('Rentang tanggal tidak valid: dari > sampai.');
+  if (from) {
+    where.push('lr.start_date <= ? AND lr.end_date >= ?');
+    params.push(to || from, from);
+  } else if (to) {
+    where.push('lr.start_date <= ?');
+    params.push(to);
+  }
   return { where: where.length > 0 ? `WHERE ${where.join(' AND ')}` : '', params };
 }
 
@@ -640,21 +732,37 @@ router.get(
   })
 );
 
+function reimburseHistoryFilter(query = {}) {
+  const where = [];
+  const params = [];
+  const status = query.status ? String(query.status).trim() : '';
+  if (status && status !== 'all') {
+    const list = status.split(',').map((s) => s.trim()).filter(Boolean);
+    if (list.length > 0) {
+      where.push(`r.status IN (${list.map(() => '?').join(', ')})`);
+      params.push(...list);
+    }
+  }
+  const from = toDate(query.from);
+  const to = toDate(query.to);
+  if (from && to && from > to) throw badRequest('Rentang tanggal tidak valid: dari > sampai.');
+  if (from) {
+    where.push('DATE(r.created_at) >= ?');
+    params.push(from);
+  }
+  if (to) {
+    where.push('DATE(r.created_at) <= ?');
+    params.push(to);
+  }
+  return { where, params };
+}
+
 /** Riwayat reimburse beserta statusnya. */
 router.get(
   '/reimburses/history',
   auth.requirePermission('attendance:read'),
   wrap(async (req, res) => {
-    const where = [];
-    const params = [];
-    const status = req.query.status ? String(req.query.status).trim() : '';
-    if (status && status !== 'all') {
-      const list = status.split(',').map((s) => s.trim()).filter(Boolean);
-      if (list.length > 0) {
-        where.push(`r.status IN (${list.map(() => '?').join(', ')})`);
-        params.push(...list);
-      }
-    }
+    const { where, params } = reimburseHistoryFilter(req.query);
     const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 200));
 
     const rows = await db.queryAll(
@@ -718,16 +826,7 @@ async function fetchLeaveHistory(query = {}) {
 }
 
 async function fetchReimburseHistory(query = {}) {
-  const where = [];
-  const params = [];
-  const status = query.status ? String(query.status).trim() : '';
-  if (status && status !== 'all') {
-    const list = status.split(',').map((s) => s.trim()).filter(Boolean);
-    if (list.length > 0) {
-      where.push(`r.status IN (${list.map(() => '?').join(', ')})`);
-      params.push(...list);
-    }
-  }
+  const { where, params } = reimburseHistoryFilter(query);
   const limit = Math.min(2000, Math.max(1, Number(query.limit) || 1000));
   return db.queryAll(
     `SELECT r.*, e.name AS employee_name, e.employee_code,

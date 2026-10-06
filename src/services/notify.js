@@ -329,16 +329,27 @@ async function sendMonthlyReport({ month, to }) {
   });
 }
 
+let statusCache = null;
+let statusStamp = 0;
+
+function invalidateStatusCache() {
+  statusCache = null;
+  statusStamp = 0;
+}
+
 /**
  * Status kanal notifikasi untuk halaman Pengaturan.
  * Nilai dibaca dari konfigurasi yang benar-benar dipakai saat kirim, supaya
  * yang tampil di UI sama dengan yang benar-benar dipakai.
+ * Cache 30 detik: dashboard memanggil tiap refresh, tanpa cache = 2 query
+ * settings berulang yang menumpuk antrean pool.
  */
 async function status() {
+  if (statusCache && Date.now() - statusStamp < 30000) return statusCache;
   const mail = await channels.mailConfig();
   const wa = await channels.whatsappConfig();
 
-  return {
+  statusCache = {
     email: {
       enabled: mail.enabled,
       configured: mail.configured,
@@ -367,6 +378,8 @@ async function status() {
             : null,
     },
   };
+  statusStamp = Date.now();
+  return statusCache;
 }
 
 function maskUrl(url) {
@@ -385,6 +398,7 @@ module.exports = {
   notifySyncFailed,
   sendMonthlyReport,
   status,
+  invalidateStatusCache,
   getTemplate,
   render,
   formatMinutes,

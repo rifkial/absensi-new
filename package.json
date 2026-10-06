@@ -17,6 +17,7 @@
     "scan": "node tools/scan.js",
     "sync": "node tools/sync-once.js",
     "test": "node --test \"test/**/*.test.js\"",
+    "build": "npm test",
     "lint": "eslint ."
   },
   "dependencies": {
