@@ -4,6 +4,7 @@ const { ZkTcpClient } = require('./client');
 const { COMMANDS } = require('./constants');
 const db = require('../../db/pool');
 const config = require('../../config');
+const settings = require('../../services/settings');
 const { toDateTime, toDate } = require('../../utils/date');
 
 /**
@@ -44,7 +45,7 @@ const zktecoAdapter = {
 
   /**
    * Tarik log absensi dari mesin lalu simpan ke DB.
-   * Mengembalikan ringkasan { fetched, inserted, duplicated, unmatched }.
+   * Mengembalikan ringkasan { fetched, inserted, duplicated, unmatched, filtered }.
    */
   async sync(device, options = {}) {
     const syncLogId = await startSyncLog(device.id);
@@ -77,7 +78,15 @@ const zktecoAdapter = {
         result.message = `Log mesin dibersihkan (${logs.length} baris tersimpan di server).`;
       }
 
-      await finishSyncLog(syncLogId, { status: 'success', ...result });
+      // Ada log yang dibuang karena mesinnya tidak sesuai -> tandai sync sebagai
+      // 'partial' supayaadmin bisa melihatnya di riwayat sinkronisasi.
+      const status = result.filtered > 0 ? 'partial' : 'success';
+      await finishSyncLog(syncLogId, { status, ...result });
+
+      // Log yang dibuang akan dibaca lagi dari mesin pada siklus berikutnya, jadi
+      // laporan harus menyebut jumlahnya; tanpa ini admin bisa mengira mesin rusak.
+      const filteredNote =
+        result.filtered > 0 ? `, ${result.filtered} scan di mesin lain dibuang` : '';
 
       return {
         ok: true,
@@ -85,8 +94,11 @@ const zktecoAdapter = {
         inserted: result.inserted,
         duplicated: result.duplicated,
         unmatched: result.unmatched,
+        filtered: result.filtered,
         usersOnDevice: users.length,
-        message: `${result.inserted} log baru, ${result.duplicated} duplikat diabaikan, ${result.unmatched} PIN tidak terdaftar.`,
+        message:
+          `${result.inserted} log baru, ${result.duplicated} duplikat diabaikan, ` +
+          `${result.unmatched} PIN tidak terdaftar${filteredNote}.`,
       };
     } catch (err) {
       await finishSyncLog(syncLogId, { status: 'failed', message: err.message });
@@ -158,14 +170,32 @@ async function startSyncLog(deviceId) {
   return result.insertId;
 }
 
-async function finishSyncLog(syncLogId, { status, message = null, fetched = 0, inserted = 0, duplicated = 0, unmatched = 0 }) {
+async function finishSyncLog(syncLogId, {
+  status,
+  message = null,
+  fetched = 0,
+  inserted = 0,
+  duplicated = 0,
+  unmatched = 0,
+  filtered = 0,
+}) {
   await db.execute(
     `UPDATE sync_logs
         SET finished_at = NOW(),
             duration_ms = TIMESTAMPDIFF(MICROSECOND, started_at, NOW()) DIV 1000,
-            status = ?, fetched = ?, inserted = ?, duplicated = ?, unmatched = ?, message = ?
+            status = ?, fetched = ?, inserted = ?, duplicated = ?, unmatched = ?,
+            filtered = ?, message = ?
       WHERE id = ?`,
-    [status, fetched, inserted, duplicated, unmatched, (message || '').slice(0, 500), syncLogId]
+    [
+      status,
+      fetched,
+      inserted,
+      duplicated,
+      unmatched,
+      filtered,
+      (message || '').slice(0, 500),
+      syncLogId,
+    ]
   );
 }
 
@@ -175,19 +205,25 @@ async function finishSyncLog(syncLogId, { status, message = null, fetched = 0, i
  * Pencocokan karyawan memakai device_user_id. Log yang device_user_id-nya
  * tidak ada di master karyawan tetap disimpan (device_user_id saja) supaya
  * data tidak hilang, tetapi ditandai "unmatched" agar bisa ditindaklanjuti.
+ *
+ * Bila pengaturan enforce_assigned_device aktif, scan dari mesin fingerprint
+ * yang tidak ditunjuk untuk karyawan tersebut dibuang di sini (tidak masuk
+ * attendance_logs sama sekali) dan dihitung pada `filtered`.
  */
 async function persistLogs({ deviceId, logs, source }) {
   let inserted = 0;
   let duplicated = 0;
   let unmatched = 0;
+  let filtered = 0;
 
   if (logs.length === 0) {
-    return { fetched: 0, inserted: 0, duplicated: 0, unmatched: 0 };
+    return { fetched: 0, inserted: 0, duplicated: 0, unmatched: 0, filtered: 0 };
   }
 
-  // Cache PIN -> employee_id supaya tidak query per baris.
+  // Cache PIN -> karyawan (+ mesin yang ditunjuk) supaya tidak query per baris.
   const pins = [...new Set(logs.map((l) => String(l.deviceUserId).trim()).filter(Boolean))];
-  const employeeMap = await mapPinsToEmployees(pins);
+  const assignmentMap = await mapPinsToAssignments(pins);
+  const enforce = await isDeviceEnforced();
 
   const CHUNK = 500;
   for (let i = 0; i < logs.length; i += CHUNK) {
@@ -210,8 +246,22 @@ async function persistLogs({ deviceId, logs, source }) {
       }
       seen.add(dedupeKey);
 
-      const employeeId = employeeMap.get(pin) ?? null;
+      const assignment = assignmentMap.get(pin) ?? null;
+      const employeeId = assignment ? assignment.id : null;
       if (!employeeId) unmatched += 1;
+
+      if (
+        employeeId &&
+        !isAcceptedByDevice({
+          enforce,
+          assignedDeviceId: assignment.device_id,
+          scanDeviceId: deviceId,
+          source,
+        })
+      ) {
+        filtered += 1;
+        continue;
+      }
 
       values.push(
         deviceId,
@@ -242,11 +292,26 @@ async function persistLogs({ deviceId, logs, source }) {
     }
   }
 
-  return { fetched: logs.length, inserted, duplicated, unmatched };
+  return { fetched: logs.length, inserted, duplicated, unmatched, filtered };
 }
 
 /** Ambil peta PIN -> employee_id untuk daftar PIN tertentu. */
 async function mapPinsToEmployees(pins) {
+  const map = new Map();
+  for (const [pin, row] of await mapPinsToAssignments(pins)) {
+    map.set(pin, row.id);
+  }
+  return map;
+}
+
+/**
+ * peta PIN -> { id, device_id } untuk daftar PIN tertentu.
+ *
+ * `device_id` adalah mesin yang ditunjuk untuk karyawan tersebut (NULL bila
+ * karyawan boleh absen di semua mesin) dan dipakai untuk menolak scan dari
+ * mesin yang salah ketika pengaturan enforce_assigned_device aktif.
+ */
+async function mapPinsToAssignments(pins) {
   const map = new Map();
   if (pins.length === 0) return map;
 
@@ -255,14 +320,48 @@ async function mapPinsToEmployees(pins) {
     const slice = pins.slice(i, i + CHUNK);
     const placeholders = slice.map(() => '?').join(', ');
     const rows = await db.queryAll(
-      `SELECT id, device_user_id FROM employees WHERE device_user_id IN (${placeholders})`,
+      `SELECT id, device_user_id, device_id FROM employees WHERE device_user_id IN (${placeholders})`,
       slice
     );
     for (const row of rows) {
-      map.set(String(row.device_user_id).trim(), row.id);
+      map.set(String(row.device_user_id).trim(), {
+        id: row.id,
+        device_id: row.device_id ?? null,
+      });
     }
   }
   return map;
+}
+
+/**
+ * Apakah scan dari `deviceId` boleh disimpan untuk karyawan yang mesinnya
+ * ditunjuk ke `assignedDeviceId`.
+ *
+ * Aturannya:
+ *   - setting enforce_assigned_device mati -> semua scan diterima
+ *   - karyawan tanpa mesin yang ditunjuk -> semua scan diterima (memang bebas)
+ *   - scan tanpa device_id (impor CSV tanpa pilih mesin) -> diterima, karena
+ *     tidak ada bukti mesin mana; import juga dilewati karena bukan sinkronisasi
+ *   - selain itu hanya scan dari mesin yang ditunjuk yang diterima
+ */
+function isAcceptedByDevice({ enforce, assignedDeviceId, scanDeviceId, source }) {
+  if (!enforce) return true;
+  if (source !== 'sync' && source !== 'push') return true;
+  if (assignedDeviceId === null || assignedDeviceId === undefined) return true;
+  if (scanDeviceId === null || scanDeviceId === undefined) return true;
+  return Number(assignedDeviceId) === Number(scanDeviceId);
+}
+
+/** Baca pengaturancalar enforcement; default false bila settings tidak terbaca. */
+async function isDeviceEnforced() {
+  try {
+    const all = await settings.getAll();
+    return settings.boolSetting(all.enforce_assigned_device, false);
+  } catch (err) {
+    // Settings tidak boleh jadi alasan seluruh sinkronisasi gagal; tetap simpan log.
+    console.warn(`[device] gagal membaca pengaturan enforce_assigned_device: ${err.message}`);
+    return false;
+  }
 }
 
 /** Simpan daftar user dari mesin sebagai informasi perangkat (bukan master karyawan). */
@@ -288,6 +387,8 @@ module.exports = {
   adapter: zktecoAdapter,
   persistLogs,
   mapPinsToEmployees,
+  mapPinsToAssignments,
+  isAcceptedByDevice,
   COMMANDS,
   toDateTime,
 };

@@ -11,6 +11,7 @@ const attendanceService = require('./attendance');
 const employeesService = require('./employees');
 const leaveCatalog = require('./leaveCatalog');
 const leaveQuota = require('./leaveQuota');
+const geocode = require('./geocode');
 const { badRequest, notFound, forbidden } = require('../utils/errors');
 const { today, toDate, startOfMonth } = require('../utils/date');
 
@@ -422,8 +423,15 @@ async function checkIn(employeeId, payload = {}, file = null) {
     throw badRequest('Ukuran selfie maksimal 5 MB.');
   }
 
-  const address = payload.address ? String(payload.address).trim().slice(0, 255) : null;
   const note = payload.note ? String(payload.note).trim().slice(0, 500) : null;
+
+  // Nama lokasi diambil di server, bukan dari browser, supaya tidak bisa dipalsukan
+  // karyawan. Kegagalan geocoding tidak menghalangi check-in (lihat services/geocode).
+  const place = await geocode.reverse(latitude, longitude);
+  const address = place.address ? place.address.slice(0, 255) : null;
+  const district = place.district ? place.district.slice(0, 120) : null;
+  const city = place.city ? place.city.slice(0, 120) : null;
+  const province = place.province ? place.province.slice(0, 120) : null;
 
   const fileName = `${employeeId}-${workDate}-${crypto.randomBytes(8).toString('hex')}${EXT_BY_MIME[file.mimetype]}`;
   const filePath = path.join(storageDir, fileName);
@@ -433,9 +441,22 @@ async function checkIn(employeeId, payload = {}, file = null) {
     const result = await db.execute(
       `INSERT INTO duty_checkins
          (employee_id, work_date, check_in_at, latitude, longitude, accuracy_m,
-          address, selfie_path, note, leave_id)
-       VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?)`,
-      [employeeId, workDate, latitude, longitude, accuracy, address, fileName, note, leave.id]
+          address, district, city, province, selfie_path, note, leave_id)
+       VALUES (?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        employeeId,
+        workDate,
+        latitude,
+        longitude,
+        accuracy,
+        address,
+        district,
+        city,
+        province,
+        fileName,
+        note,
+        leave.id,
+      ]
     );
 
     // Rekap harian langsung dihitung ulang agar status dinas_luar + jam portal
@@ -474,7 +495,8 @@ async function listDuty(employeeId, query = {}) {
   const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
   const rows = await db.queryAll(
     `SELECT d.id, d.work_date, d.check_in_at, d.check_out_at, d.latitude, d.longitude,
-            d.accuracy_m, d.address, d.note, d.selfie_path
+            d.accuracy_m, d.address, d.district, d.city, d.province,
+            d.note, d.selfie_path
        FROM duty_checkins d
       WHERE d.employee_id = ?
       ORDER BY d.work_date DESC, d.id DESC

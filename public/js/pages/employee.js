@@ -55,6 +55,24 @@
   // ------------------------------------------------------------------ GPS
 
   /**
+   * Baca status izin lokasi tanpa memicunya, supaya penyebab kegagalan
+   * (ditolak user, diblokir header server, atau non-HTTPS) bisa dibedakan.
+   */
+  function currentPermissionState() {
+    if (!navigator.permissions || !navigator.permissions.query) {
+      return Promise.resolve('unknown');
+    }
+    return navigator.permissions
+      .query({ name: 'geolocation' })
+      .then(function (status) {
+        return status.state;
+      })
+      .catch(function () {
+        return 'unknown';
+      });
+  }
+
+  /**
    * Ambil koordinat sekali dari GPS perangkat.
    * Pesan error dibuat spesifik karena izin lokasi sering ditolak tanpa
    * penjelasan, terutama saat aplikasi dibuka lewat IP (non-HTTPS).
@@ -83,8 +101,28 @@
           });
         },
         function (err) {
+          if (err.code === 1) {
+            // Kode 1 ambigu: bisa ditolak user atau diblokir Permissions-Policy.
+            currentPermissionState().then(function (state) {
+              if (state === 'denied') {
+                reject(
+                  new Error(
+                    'Izin lokasi ditolak untuk situs ini. Buka pengaturan situs di browser, ' +
+                      'ubah Lokasi menjadi Izinkan, lalu muat ulang halaman.'
+                  )
+                );
+              } else {
+                reject(
+                  new Error(
+                    'Izin lokasi diblokir oleh kebijakan situs (Permissions-Policy). ' +
+                      'Hubungi admin untuk mengaktifkan akses lokasi.'
+                  )
+                );
+              }
+            });
+            return;
+          }
           var messages = {
-            1: 'Izin lokasi ditolak. Aktifkan izin lokasi untuk situs ini lalu coba lagi.',
             2: 'Lokasi tidak ditemukan. Pastikan GPS perangkat dalam keadaan aktif.',
             3: 'Waktu pencarian lokasi habis. Coba lagi di tempat dengan sinyal GPS.',
           };
@@ -93,6 +131,28 @@
         { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 }
       );
     });
+  }
+
+  /** Gabungkan nama lokasi dari hasil reverse geocoding (jalan, kecamatan, kota). */
+  function placeLabel(row) {
+    var parts = [];
+    var seen = {};
+
+    function push(value) {
+      var text = String(value || '').trim();
+      if (!text) return;
+      var key = text.toLowerCase();
+      if (seen[key]) return;
+      seen[key] = true;
+      parts.push(text);
+    }
+
+    push(row.address);
+    push(row.district);
+    push(row.city);
+    push(row.province);
+
+    return parts.join(', ');
   }
 
   function accuracyLabel(meters) {
@@ -263,8 +323,10 @@
           bodyHtml =
             '<div class="callout success"><strong>Sudah check-in dinas luar kota</strong>' +
               'Check-in ' + esc(clockOf(loc.check_in_at) || '-') + ' di ' +
-              esc(Number(loc.latitude).toFixed(6)) + ', ' +
-              esc(Number(loc.longitude).toFixed(6)) + accuracyLabel(loc.accuracy_m) + '.' +
+              '<strong>' + esc(placeLabel(loc) || 'koordinat ' +
+                Number(loc.latitude).toFixed(6) + ', ' +
+                Number(loc.longitude).toFixed(6)) + '</strong>' +
+              accuracyLabel(loc.accuracy_m) + '.' +
               (loc.check_out_at
                 ? ' Check-out ' + esc(clockOf(loc.check_out_at) || '-') + '.'
                 : ' Belum check-out.') +
@@ -437,7 +499,25 @@
           );
         },
       },
-      { key: 'address', label: 'Alamat' },
+      {
+        key: 'lokasi',
+        label: 'Lokasi',
+        render: function (r) {
+          var label = placeLabel(r);
+          return label
+            ? esc(label) +
+              '<div class="small faint">' +
+              esc(Number(r.latitude).toFixed(6)) + ', ' +
+              esc(Number(r.longitude).toFixed(6)) +
+              accuracyLabel(r.accuracy_m) +
+              '</div>'
+            : '<span class="faint">' +
+              esc(Number(r.latitude).toFixed(6)) + ', ' +
+              esc(Number(r.longitude).toFixed(6)) +
+              accuracyLabel(r.accuracy_m) +
+              '</span>';
+        },
+      },
       { key: 'note', label: 'Keterangan' },
       {
         key: 'selfie_url',

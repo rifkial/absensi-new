@@ -107,6 +107,20 @@ const config = {
     from: str('MAIL_FROM', 'Aplikasi Absensi <absensi@contoh.com>'),
   },
 
+  // Reverse geocoding koordinat -> nama lokasi/kecamatan/kota.
+  // Pakai Nominatim (OpenStreetMap): gratis tanpa API key. Syaratnya maksimal
+  // 1 permintaan/detik dan User-Agent yang jelas, keduanya ditangani di
+  // services/geocode.js lewat jeda + cache.
+  geocode: {
+    enabled: bool('GEOCODE_ENABLED', true),
+    baseUrl: str('GEOCODE_BASE_URL', 'https://nominatim.openstreetmap.org'),
+    userAgent: str('GEOCODE_USER_AGENT', 'AplikasiAbsensi/1.0'),
+    language: str('GEOCODE_LANGUAGE', 'id'),
+    timeoutMs: int('GEOCODE_TIMEOUT_MS', 8000),
+    minIntervalMs: int('GEOCODE_MIN_INTERVAL_MS', 1100),
+    cacheTtlMs: int('GEOCODE_CACHE_TTL_MS', 86400000),
+  },
+
   whatsapp: {
     enabled: bool('WHATSAPP_ENABLED', false),
     url: str('WHATSAPP_URL', ''),
@@ -129,6 +143,11 @@ if (!fs.existsSync(path.join(ROOT, '.env'))) {
 }
 if (config.attendance.defaultLateTolerance < 0) {
   problems.push('DEFAULT_LATE_TOLERANCE tidak boleh negatif.');
+}
+if (config.geocode.minIntervalMs < 1000 && config.geocode.enabled) {
+  problems.push(
+    'GEOCODE_MIN_INTERVAL_MS tidak boleh di bawah 1000 ms; Nominatim membatasi 1 permintaan/detik.'
+  );
 }
 
 if (problems.length > 0) {

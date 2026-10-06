@@ -148,11 +148,24 @@
     });
   }
 
+  function emptyMeta() {
+    return { departments: [], positions: [], shifts: [], devices: [] };
+  }
+
   function loadMeta() {
     return api.get('/auth/meta').then(function (res) {
-      App.state.meta = res.data || { departments: [], positions: [], shifts: [] };
+      var data = res.data || {};
+      // Lipat dengan default supaya field baru tidak undefined di halaman lain.
+      var fallback = emptyMeta();
+      App.state.meta = {
+        departments: data.departments || fallback.departments,
+        positions: data.positions || fallback.positions,
+        shifts: data.shifts || fallback.shifts,
+        devices: data.devices || fallback.devices,
+        leave_categories: data.leave_categories || [],
+      };
     }).catch(function () {
-      App.state.meta = { departments: [], positions: [], shifts: [] };
+      App.state.meta = emptyMeta();
     });
   }
 
@@ -461,6 +474,10 @@
   window.addEventListener('hashchange', function () {
     if (api.isLoggedIn() && document.getElementById('pageContent')) renderPage();
   });
+
+  // Dipakai halaman Karyawan & Perangkat setelah menambah data baru, supaya
+  // dropdown meta (departemen, jabatan, shift, mesin) ikut terbarui.
+  App.reloadMeta = loadMeta;
 
   // ------------------------------------------------------------------ Export
 

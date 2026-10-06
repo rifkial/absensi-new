@@ -185,8 +185,73 @@ async function getApprovedLeave(employeeId, workDate) {
  * Hitung rekap satu karyawan untuk satu tanggal.
  * Fungsi murni (tidak menyentuh DB selain pemanggilan di atas) supaya mudah
  * diuji.
+ *
+ * Wrapper untuk menambahkan penanda "absen di mesin lain" pada hasil hitungan
+ * dasar. Log dari mesin yang salah TETAP dihitung sebagai kehadiran (sesuai
+ * keputusan admin), hanya diberi label tambahan agar terlihat di laporan.
  */
-function computeDaily({
+function computeDaily(options) {
+  const result = computeDailyBase(options);
+  return markWrongDevice(result, options);
+}
+
+/**
+ * Deteksi scan dari mesin fingerprint selain mesin yang ditunjuk.
+ *
+ * Aturannya:
+ *   - karyawan tanpa device_id (belum ditunjuk mesin) tidak pernah ditandai,
+ *     karena mereka memang boleh absen di semua mesin
+ *   - log tanpa device_id (mis. impor CSV tanpa pilih mesin) juga diabaikan,
+ *     karena tidak ada bukti mesin mana
+ *
+ * @returns {object} hasil rekap dengan isWrongDevice + catatan nama mesin
+ */
+function markWrongDevice(result, { employee, logs }) {
+  const assigned = employee?.device_id ?? null;
+  if (!assigned || !Array.isArray(logs) || logs.length === 0) return result;
+
+  const foreign = new Set();
+  for (const log of logs) {
+    const from = log.device_id ?? null;
+    if (!from) continue;
+    if (Number(from) !== Number(assigned)) foreign.add(Number(from));
+  }
+
+  if (foreign.size === 0) return result;
+
+  result.wrongDevice = true;
+  result.wrongDeviceIds = [...foreign];
+
+  const names = result.wrongDeviceNames
+    || foreignDeviceNames(foreign);
+  result.wrongDeviceNames = names;
+
+  const info = names.length > 0 ? names.join(', ') : `${foreign.size} mesin lain`;
+  result.note = result.note
+    ? `${result.note} - Absen juga di mesin lain: ${info}`
+    : `Absen di mesin lain: ${info}`;
+
+  return result;
+}
+
+/** Nama mesin untuk daftar id, supaya catatan rekap terbaca enak. */
+function foreignDeviceNames(ids) {
+  const list = [...ids];
+  if (list.length === 0) return [];
+
+  // Nama diambil dari cache modul; diisi oleh generator sebelum memakai label.
+  const names = (foreignDeviceNameCache || new Map());
+  return list.map((id) => names.get(id)).filter(Boolean);
+}
+
+let foreignDeviceNameCache = new Map();
+
+/** Dipanggil generator agar catatan "mesin lain" menyebut nama mesin. */
+function setForeignDeviceNames(map) {
+  foreignDeviceNameCache = map instanceof Map ? map : new Map();
+}
+
+function computeDailyBase({
   employee,
   workDate,
   shift,
@@ -464,7 +529,7 @@ const UPSERT_SQL_PREFIX = `
   INSERT INTO attendance_daily
       (employee_id, work_date, first_in, first_out,
      late_minutes, early_minutes, work_minutes, overtime_minutes,
-     scan_count, status, note, is_auto)
+     scan_count, status, note, is_auto, is_wrong_device)
   VALUES`;
 
 const UPSERT_SQL_SUFFIX = `
@@ -478,6 +543,7 @@ const UPSERT_SQL_SUFFIX = `
     scan_count = VALUES(scan_count),
     status = IF(is_auto = 1, VALUES(status), status),
     note = IF(is_auto = 1, VALUES(note), note),
+    is_wrong_device = IF(is_auto = 1, VALUES(is_wrong_device), is_wrong_device),
     generated_at = NOW()
 `;
 
@@ -508,7 +574,7 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
   }
 
   const employees = await db.queryAll(
-    `SELECT e.id, e.name, e.employee_code, e.shift_id, e.status, e.hire_date
+    `SELECT e.id, e.name, e.employee_code, e.shift_id, e.status, e.hire_date, e.device_id
        FROM employees e
       WHERE ${where.join(' AND ')}
       ORDER BY e.id ASC`,
@@ -527,6 +593,10 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
 
   // Peta hari libur sekali untuk seluruh rentang, bukan per karyawan per tanggal.
   const holidayMap = await holidaysService.getHolidayMap(startDate, endDate);
+
+  // Nama mesin untuk catatan "absen di mesin lain". Dimuat sekali per rekap,
+  // mencakup mesin yang ditunjuk maupun mesin yang muncul di log.
+  setForeignDeviceNames(await getScanDeviceNameMap(employees, startDate, endDate));
 
   const rows = [];
   const now = new Date();
@@ -566,6 +636,7 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
         computed.scanCount,
         computed.status,
         computed.note,
+        computed.wrongDevice ? 1 : 0,
       ]);
     }
   }
@@ -579,8 +650,8 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
   let written = 0;
   for (let i = 0; i < rows.length; i += BATCH) {
     const slice = rows.slice(i, i + BATCH);
-    // 11 placeholder per baris + literal 1 untuk kolom is_auto.
-    const placeholders = slice.map(() => '(?,?,?,?,?,?,?,?,?,?,?,1)').join(', ');
+    // 12 placeholder per baris + literal 1 untuk kolom is_auto.
+    const placeholders = slice.map(() => '(?,?,?,?,?,?,?,?,?,?,?,1,?)').join(', ');
     // executeLarge memakai mode non-prepared supaya jumlah placeholder yang
     // banyak tidak memicu "Malformed communication packet" dari MariaDB.
     await db.executeLarge(`${UPSERT_SQL_PREFIX} ${placeholders} ${UPSERT_SQL_SUFFIX}`, slice.flat());
@@ -588,14 +659,43 @@ async function generate({ from, to, employeeId = null, departmentId = null, forc
   }
 
   void force;
+
+  // Berapa baris yang ditandai scan dari mesin selain mesin yang ditunjuk.
+  const wrongDevice = rows.reduce((sum, row) => sum + (row[12] ? 1 : 0), 0);
+
   return {
     processed: written,
     employees: employees.length,
     days: dates.length,
+    wrong_device: wrongDevice,
     from: startDate,
     to: endDate,
-    message: `${written} baris rekap dibuat untuk ${employees.length} karyawan.`,
+    message:
+      `${written} baris rekap dibuat untuk ${employees.length} karyawan.` +
+      (wrongDevice > 0 ? ` ${wrongDevice} hari terdeteksi scan dari mesin lain.` : ''),
   };
+}
+
+/**
+ * Nama SEMUA mesin yang muncul pada log karyawan yang sedang direkap.
+ *
+ * Berbeda dari getDeviceNameMap (yang hanya mengambil mesin yang ditunjuk),
+ * peta ini juga harus memuat mesin yang "salah" supaya catatan rekap menyebut
+ * nama aslinya, bukan sekadar "1 mesin lain".
+ */
+async function getScanDeviceNameMap(employees, startDate, endDate) {
+  if (employees.length === 0) return new Map();
+
+  const ids = [...new Set(employees.map((e) => Number(e.id)))];
+  const map = await db.queryAll(
+    `SELECT DISTINCT d.id, d.name
+       FROM devices d
+       JOIN attendance_logs l ON l.device_id = d.id
+      WHERE l.log_date BETWEEN ? AND ?
+        AND l.employee_id IN (${ids.map(() => '?').join(', ')})`,
+    [startDate, endDate, ...ids]
+  );
+  return new Map(map.map((r) => [Number(r.id), r.name]));
 }
 
 /** Cache hasil resolveShift per (karyawan, tanggal) supaya tidak query berulang. */
@@ -627,7 +727,8 @@ async function getLeaveCached(employeeId, workDate, cache) {
 async function getDutyCheckin(employeeId, workDate) {
   return db.queryOne(
     `SELECT id, employee_id, work_date, check_in_at, check_out_at,
-            latitude, longitude, accuracy_m, address, selfie_path, note, leave_id
+            latitude, longitude, accuracy_m, address, district, city, province,
+            selfie_path, note, leave_id
        FROM duty_checkins
       WHERE employee_id = ? AND work_date = ?`,
     [employeeId, workDate]
@@ -713,6 +814,7 @@ async function list(query = {}) {
     JOIN employees e ON e.id = d.employee_id
     LEFT JOIN departments dep ON dep.id = e.department_id
     LEFT JOIN positions pos ON pos.id = e.position_id
+    LEFT JOIN devices dev ON dev.id = e.device_id
     ${whereSql}
   `;
 
@@ -724,10 +826,12 @@ async function list(query = {}) {
        dep.name AS department_name, pos.name AS position_name,
        d.work_date,
        d.first_in, d.first_out, d.late_minutes, d.early_minutes,
-       d.work_minutes, d.overtime_minutes, d.scan_count, d.status, d.is_auto, d.note
+       d.work_minutes, d.overtime_minutes, d.scan_count, d.status, d.is_auto, d.note,
+       d.is_wrong_device, e.device_id,
+       dev.name AS assigned_device_name
      ${base}
-     ORDER BY d.work_date DESC, e.name ASC
-     LIMIT ? OFFSET ?`,
+      ORDER BY d.work_date DESC, e.name ASC
+      LIMIT ? OFFSET ?`,
     [...params, perPage, offset]
   );
 
@@ -756,6 +860,10 @@ async function getOne(employeeId, workDate) {
   const shift = await resolveShift(employeeId, date);
   const duty = await getDutyCheckin(employeeId, date);
   const holiday = await holidaysService.getByDate(date);
+  const assignedDevice = await db.queryOne(
+    'SELECT e.device_id, d.name AS device_name FROM employees e LEFT JOIN devices d ON d.id = e.device_id WHERE e.id = ?',
+    [employeeId]
+  );
 
   const logs = await db.queryAll(
     `SELECT l.id, l.log_time, l.log_state, l.verify_mode, l.work_code, l.source,
@@ -767,10 +875,23 @@ async function getOne(employeeId, workDate) {
     [employeeId, date]
   );
 
+  // Nama mesin yang muncul pada log hari ini (untuk label "absen di mesin lain").
+  const logDeviceNames = await db.queryAll(
+    `SELECT DISTINCT l.device_id, d.name AS device_name
+       FROM attendance_logs l
+       LEFT JOIN devices d ON d.id = l.device_id
+      WHERE l.employee_id = ? AND l.log_date = ? AND l.device_id IS NOT NULL`,
+    [employeeId, date]
+  );
+
   return {
     daily: daily || null,
     duty: duty || null,
     holiday: holiday || null,
+    assigned_device: assignedDevice?.device_id
+      ? { id: assignedDevice.device_id, name: assignedDevice.device_name }
+      : null,
+    scan_devices: logDeviceNames,
     shift: shift.shift
       ? {
           shift_code: shift.shift.code,
@@ -978,6 +1099,7 @@ module.exports = {
   getGlobalShift,
   invalidateGlobalShift,
   getDutyCheckin,
+  setForeignDeviceNames,
   minutesToTime,
   isoDayOfWeek,
 };

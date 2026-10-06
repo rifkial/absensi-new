@@ -11,7 +11,7 @@
 
   window.Pages = window.Pages || {};
 
-  var filters = { search: '', status: 'aktif', department_id: '', page: 1, per_page: 25 };
+  var filters = { search: '', status: 'aktif', department_id: '', device_id: '', page: 1, per_page: 25 };
   var rows = [];
   var meta = {};
   var stats = {};
@@ -40,6 +40,10 @@
                 '<option value="">Semua</option>' +
               '</select>' +
             '</div>' +
+            '<div class="field">' +
+              '<label>Mesin</label>' +
+              '<select id="empDevice"><option value="">Semua</option></select>' +
+            '</div>' +
             '<div class="field" style="min-width:auto">' +
               '<label>&nbsp;</label>' +
               '<button class="btn" id="empFilter">Terapkan</button>' +
@@ -65,16 +69,30 @@
   };
 
   function fillMeta() {
-    var meta_ = App.state.meta || { departments: [], positions: [], shifts: [] };
+    var meta_ = App.state.meta || { departments: [], positions: [], shifts: [], devices: [] };
     var dept = document.getElementById('empDept');
-    if (!dept) return;
+    var dev = document.getElementById('empDevice');
 
-    dept.innerHTML = '<option value="">Semua</option>' +
-      (meta_.departments || []).map(function (d) {
-        return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
-      }).join('');
+    if (dept) {
+      dept.innerHTML = '<option value="">Semua</option>' +
+        (meta_.departments || []).map(function (d) {
+          return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
+        }).join('');
+      dept.value = filters.department_id || '';
+    }
 
-    dept.value = filters.department_id || '';
+    if (dev) {
+      var devices = meta_.devices || [];
+      dev.innerHTML = '<option value="">Semua</option>' +
+        (devices.length === 0
+          ? '<option value="" disabled>(belum ada mesin)</option>'
+          : devices.map(function (d) {
+              var label = d.name + (d.location ? ' - ' + d.location : '');
+              if (Number(d.is_active) !== 1) label += ' (nonaktif)';
+              return '<option value="' + d.id + '">' + esc(label) + '</option>';
+            }).join(''));
+      dev.value = filters.device_id || '';
+    }
   }
 
   function bind() {
@@ -104,9 +122,16 @@
       load();
     });
 
+    document.getElementById('empDevice').addEventListener('change', function () {
+      filters.device_id = this.value;
+      filters.page = 1;
+      load();
+    });
+
     document.getElementById('empFilter').addEventListener('click', function () {
       filters.search = search.value.trim();
       filters.department_id = document.getElementById('empDept').value;
+      filters.device_id = document.getElementById('empDevice').value;
       filters.status = document.getElementById('empStatus').value;
       filters.page = 1;
       load();
@@ -187,6 +212,12 @@
         return '<div style="font-weight:500">' + esc(r.name) + '</div>' +
           (r.email ? '<div class="small faint">' + esc(r.email) + '</div>' : '');
       } },
+      { key: 'device_name', label: 'Mesin', render: function (r) {
+        if (!r.device_id) {
+          return '<span class="faint" title="Kosong = boleh absen di semua mesin">semua mesin</span>';
+        }
+        return '<span class="badge info">' + esc(r.device_name || '-mesin-') + '</span>';
+      } },
       { key: 'department_name', label: 'Unit Kerja', render: function (r) { return esc(r.department_name || '-'); } },
       { key: 'position_name', label: 'Jabatan', render: function (r) { return esc(r.position_name || '-'); } },
       { key: 'fingerprint_status', label: 'Sidik Jari', render: function (r) {
@@ -247,6 +278,7 @@
           'Kode unik internal, mis. 001 atau NIP.') +
         field('device_user_id', 'PIN Mesin', isEdit ? row.device_user_id || '' : '', false,
           'Harus sama dengan User ID / PIN pada mesin fingerprint. Kosongkan bila belum terdaftar.') +
+        deviceField(isEdit ? row : null) +
         field('name', 'Nama Lengkap', isEdit ? row.name : '', true) +
         selectField('gender', 'Jenis Kelamin', isEdit ? row.gender || '' : '',
           [['', '-'], ['L', 'Laki-laki'], ['P', 'Perempuan']]) +
@@ -328,6 +360,32 @@
       '<input type="number" id="f_annual_leave_quota" min="0" max="365" step="1" value="' + quota + '">' +
       '<span class="help">Jumlah hari kerja per tahun, diinput manual. Isi 0 bila karyawan tidak punya jatah cuti tahunan.</span>' +
     '</div>' + readOnly;
+  }
+
+  /**
+   * Field "Mesin Fingerprint" pada form karyawan.
+   *
+   * Opsi diambil dari daftar mesin yang sudah terdaftar (menu Perangkat), baik
+   * mesin TCP yang disinkronkan maupun mesin PUSH yang mendaftarkan dirinya
+   * sendiri. Kosong berarti karyawan boleh absen di semua mesin.
+   */
+  function deviceField(row) {
+    var devices = (App.state.meta || {}).devices || [];
+
+    var options = [['', 'Semua mesin (bebas absen di mana saja)']]
+      .concat(devices.map(function (d) {
+        var label = d.name + (d.location ? ' - ' + d.location : '');
+        if (Number(d.is_active) !== 1) label += ' (nonaktif)';
+        return [d.id, label];
+      }));
+
+    var current = row ? (row.device_id || '') : '';
+    var help = devices.length === 0
+      ? 'Belum ada mesin terdaftar. Tambahkan dulu di menu Perangkat - daftar di sini diambil dari data mesin fingerprint yang sudah ada.'
+      : 'Mesin absen yang ditunjuk untuk karyawan ini. Kosongkan bila boleh absen di semua mesin. ' +
+        'Absen di mesin lain tetap dihitung hadir, tetapi diberi label berbeda di laporan.';
+
+    return selectField('device_id', 'Mesin Fingerprint', current, options, help);
   }
 
   /** Sel "sisa / jatah" cuti tahunan untuk tabel daftar karyawan. */
@@ -461,7 +519,7 @@
     '</div>';
   }
 
-  function selectField(name, label, value, options) {
+  function selectField(name, label, value, options, help) {
     return '<div class="field">' +
       '<label>' + esc(label) + '</label>' +
       '<select id="f_' + name + '">' +
@@ -471,6 +529,7 @@
           return '<option value="' + escAttr(v) + '"' + selected + '>' + esc(o[1]) + '</option>';
         }).join('') +
       '</select>' +
+      (help ? '<span class="help">' + esc(help) + '</span>' : '') +
     '</div>';
   }
 
@@ -503,6 +562,7 @@
       department_id: numOrNull(get('department_id')),
       position_id: numOrNull(get('position_id')),
       shift_id: numOrNull(get('shift_id')),
+      device_id: numOrNull(get('device_id')),
       phone: get('phone') || null,
       email: get('email') || null,
       address: get('address') || null,
@@ -541,7 +601,16 @@
     return n;
   }
 
+  /**
+   * Muat ulang meta setelah ada karyawan/mesin baru.
+   * Memakai api.get('/auth/meta') lalu setter resmi dari app.js supaya
+   * field baru (devices) ikut terisi dan tidak ada logika dobel di sini.
+   */
   function reloadMeta() {
+    if (typeof App.reloadMeta === 'function') {
+      App.reloadMeta().then(fillMeta).catch(function () {});
+      return;
+    }
     api.get('/auth/meta').then(function (res) {
       App.state.meta = res.data;
       fillMeta();
@@ -579,6 +648,13 @@
                 App.table([
                   { key: 'employee_code', label: 'Kode' },
                   { key: 'device_user_id', label: 'PIN Mesin' },
+                  { key: 'device_name', label: 'Mesin Ditunjuk', render: function (r) {
+                    if (!r.device_id) {
+                      return '<span class="faint">Semua mesin (bebas absen di mana saja)</span>';
+                    }
+                    return '<span class="badge info">' + esc(r.device_name || '-') + '</span>' +
+                      (r.device_location ? ' <span class="small faint">' + esc(r.device_location) + '</span>' : '');
+                  } },
                   { key: 'name', label: 'Nama' },
                   { key: 'department_name', label: 'Unit Kerja' },
                   { key: 'position_name', label: 'Jabatan' },
@@ -978,7 +1054,9 @@
       bodyHtml:
         '<div class="callout">' +
           '<strong>Format kolom yang dikenali</strong>' +
-          'employee_code, device_user_id, name, gender, department_id, position_id, shift_id, phone, email, hire_date, status' +
+          'employee_code, device_user_id, device_id, name, gender, department_id, position_id, shift_id, phone, email, hire_date, status' +
+          '<br>device_id boleh dikosongkan atau diisi dengan "nama_mesin" / "nama mesin". ' +
+          'Bila diisi, karyawan ditunjuk ke mesin tersebut; bila kosong, karyawan boleh absen di semua mesin.' +
         '</div>' +
         '<div class="callout warning">' +
           '<strong>Aturan</strong>' +

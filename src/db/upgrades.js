@@ -185,6 +185,10 @@ async function upgradeEmployees(conn) {
     ['annual_leave_quota', '`annual_leave_quota` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `fingerprint_status`'],
     ['annual_leave_used', '`annual_leave_used` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `annual_leave_quota`'],
     ['annual_leave_reset_at', '`annual_leave_reset_at` DATETIME NULL AFTER `annual_leave_used`'],
+
+    // Mesin fingerprint yang ditunjuk untuk karyawan ini. NULL = boleh absen
+    // di semua mesin, jadi karyawan lama tidak ikut berubah.
+    ['device_id', '`device_id` INT UNSIGNED NULL AFTER `device_user_id`'],
   ];
 
   for (const [name, definition] of columns) {
@@ -192,6 +196,41 @@ async function upgradeEmployees(conn) {
     await conn.query(`ALTER TABLE \`employees\` ADD COLUMN ${definition}`);
     changes.push(`employees.${name}`);
   }
+
+  // Indeks + FK baru dipasang setelah devices dipastikan ada (tabel devices
+  // dibuat setelah employees pada schema.sql).
+  if (await tableExists(conn, 'devices')) {
+    if (!(await indexExists(conn, 'employees', 'ix_employees_device'))) {
+      await conn.query('ALTER TABLE `employees` ADD KEY `ix_employees_device` (`device_id`)');
+      changes.push('employees.ix_employees_device');
+    }
+
+    await dropForeignKeysOn(conn, 'employees', 'device_id', 'fk_employees_device');
+    if (!(await fkExists(conn, 'employees', 'fk_employees_device'))) {
+      await conn.query(
+        `ALTER TABLE \`employees\`
+           ADD CONSTRAINT \`fk_employees_device\`
+           FOREIGN KEY (\`device_id\`) REFERENCES \`devices\` (\`id\`)
+           ON DELETE SET NULL`
+      );
+      changes.push('employees.fk_employees_device');
+    }
+  }
+}
+
+/**
+ * Tanda absen dari mesin fingerprint yang tidak ditunjuk.
+ * Log tetap tersimpan dan tetap dihitung, hanya diberi label untuk laporan.
+ */
+async function upgradeAttendanceDailyWrongDevice(conn) {
+  if (!(await tableExists(conn, 'attendance_daily'))) return;
+  if (await columnExists(conn, 'attendance_daily', 'is_wrong_device')) return;
+
+  await conn.query(
+    'ALTER TABLE `attendance_daily` ADD COLUMN `is_wrong_device` TINYINT(1) NOT NULL DEFAULT 0 ' +
+      "COMMENT '1 = ada scan dari mesin selain mesin yang ditunjuk'"
+  );
+  changes.push('attendance_daily.is_wrong_device');
 }
 
 /**
@@ -201,7 +240,7 @@ async function upgradeEmployees(conn) {
  * memvalidasi ISO 1-7. Karena urutan"Senin..Sabtu" kebetulan sama di kedua
  * konvensi, angka 1-6 tidak rusak; yang hilang hanya hari Minggu (terkirim
  * "0" lalu dibuang). Nilai yang sudah tersimpan tidak bisa ditebak maksudnya,
- * jadi migrate hanya MEMBERITAKAN baris bermasalah lewat log, tanpa mengubah
+ * jadi migrate hanya memberi tahu baris bermasalah lewat log, tanpa mengubah
  * data diam-diam.
  */
 async function auditShiftWorkDays(conn) {
@@ -247,6 +286,46 @@ async function upgradeLeaveQuotaLogs(conn) {
 }
 
 /**
+ * Jumlah scan yang dibuang saat sinkronisasi.
+ *
+ * Diisi hanya ketika pengaturan enforce_assigned_device aktif, yaitu scan dari
+ * mesin fingerprint yang tidak ditunjuk untuk karyawan tersebut tidak disimpan
+ * sama sekali. Kolomnya supaya admin bisa melihat di riwayat sinkronisasi bahwa
+ * mesin mengirim scan yang sengaja dibuang (bukan mesin yang sedang rusak).
+ */
+async function upgradeSyncLogsFiltered(conn) {
+  if (!(await tableExists(conn, 'sync_logs'))) return;
+  if (await columnExists(conn, 'sync_logs', 'filtered')) return;
+
+  await conn.query(
+    'ALTER TABLE `sync_logs` ADD COLUMN `filtered` INT UNSIGNED NOT NULL DEFAULT 0 ' +
+      "COMMENT 'Scan dibuang karena mesin tidak sesuai yang ditunjuk' AFTER `unmatched`"
+  );
+  changes.push('sync_logs.filtered');
+}
+
+/**
+ * Kolom hasil reverse geocode pada duty_checkins.
+ * Instalasi lama hanya punya `address`; di sini ditambahkan kecamatan/kota/provinsi
+ * supaya laporan bisa mengelompokkan lokasi tanpa parse alamat bebas.
+ */
+async function upgradeDutyCheckinsGeo(conn) {
+  if (!(await tableExists(conn, 'duty_checkins'))) return;
+
+  const columns = [
+    ['district', "`district` VARCHAR(120) NULL AFTER `address`"],
+    ['city', "`city` VARCHAR(120) NULL AFTER `district`"],
+    ['province', "`province` VARCHAR(120) NULL AFTER `city`"],
+  ];
+
+  for (const [name, definition] of columns) {
+    if (await columnExists(conn, 'duty_checkins', name)) continue;
+    await conn.query(`ALTER TABLE \`duty_checkins\` ADD COLUMN ${definition}`);
+    changes.push(`duty_checkins.${name}`);
+  }
+}
+
+/**
  * Terapkan seluruh upgrade. Wajib dipanggil SESUDAH `USE <database>` dan
  * SEBELUM schema.sql dieksekusi (schema.sql menambahkan FK di akhir).
  */
@@ -256,6 +335,9 @@ async function applyUpgrades(conn) {
   await upgradeLeaveRequests(conn);
   await upgradeLeaveQuotaLogs(conn);
   await upgradeAttendanceDaily(conn);
+  await upgradeAttendanceDailyWrongDevice(conn);
+  await upgradeSyncLogsFiltered(conn);
+  await upgradeDutyCheckinsGeo(conn);
   await auditShiftWorkDays(conn);
 
   if (changes.length > 0) {

@@ -290,9 +290,12 @@
       } },
       { key: 'status', label: 'Status', render: function (r) { return App.badge(r.status); } },
       { key: 'note', label: 'Catatan', render: function (r) {
-        return r.note
+        var wrong = Number(r.is_wrong_device) === 1;
+        var note = r.note
           ? '<span class="small muted" title="' + escAttr(r.note) + '">' + esc(String(r.note).slice(0, 30)) + '</span>'
           : (Number(r.is_auto) === 0 ? '<span class="badge warning">Koreksi Manual</span>' : '<span class="faint">-</span>');
+        if (!wrong) return note;
+        return '<span class="badge warning" title="Ada scan dari mesin fingerprint selain mesin yang ditunjuk untuk karyawan ini">Mesin lain</span> ' + note;
       } },
     ];
 
@@ -442,6 +445,25 @@
                   } },
                   { key: 'work_code', label: 'Kode', mono: true },
                 ], logs, { empty: 'Tidak ada scan pada tanggal ini.', emptyIcon: '&#128190;' }) +
+                ((res[1].assigned_device || res[1].scan_devices || []).length
+                  ? (function () {
+                      var assigned = res[1].assigned_device;
+                      var scan = res[1].scan_devices || [];
+                      var others = scan.filter(function (d) { return !assigned || d.device_id !== assigned.id; });
+                      var lines = [];
+                      lines.push('Mesin ditunjuk: <strong>' +
+                        (assigned ? esc(assigned.name) : '<em>semua mesin</em>') + '</strong>');
+                      if (scan.length > 0) {
+                        lines.push('Mesin pada scan: ' +
+                          scan.map(function (d) { return esc(d.device_name || 'Mesin ' + d.device_id); }).join(', '));
+                      }
+                      if (others.length > 0) {
+                        lines.push('<span class="badge warning">Ada scan di mesin lain</span> ' +
+                          'Scan tetap dihitung hadir, tapi ditandai di laporan.');
+                      }
+                      return '<div class="callout mt">' + lines.join('<br>') + '</div>';
+                    })()
+                  : '') +
                 (holiday ? '<div class="callout mt"><strong>Hari Libur: ' + esc(holiday.name) + '</strong>' +
                   (Number(holiday.is_workday) === 1
                     ? ' Tanggal ini ditandai tetap bekerja, jadi dihitung seperti hari biasa.'

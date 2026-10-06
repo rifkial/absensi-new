@@ -257,6 +257,8 @@
             '<div class="field checkbox full"><input type="checkbox" id="device_clear_log_after_sync"' + (toBool(s.device_clear_log_after_sync) ? ' checked' : '') + '><label for="device_clear_log_after_sync">Hapus log di mesin setelah sinkron</label></div>' +
             field('Port PUSH (ADMS)', 'push_port', s.push_port, 'number', '', '1', '65535') +
             field('Token PUSH (opsional)', 'push_auth_token', s.push_auth_token, 'password', '') +
+            '<div class="field checkbox full"><input type="checkbox" id="enforce_assigned_device"' + (toBool(s.enforce_assigned_device) ? ' checked' : '') + '><label for="enforce_assigned_device">Tolak scan di mesin yang tidak ditunjuk</label>' +
+              '<span class="help">Bila aktif, scan karyawan pada mesin fingerprint yang tidak ditunjuk di data karyawan TIDAK dicatat dan tidak dihitung sebagai kehadiran. Hanya berlaku untuk scan dari mesin (sinkronisasi/PUSH); impor CSV dan pencatatan manual tetap disimpan.</span></div>' +
           '</div>' +
         '</div>' +
       '</div>';
@@ -363,6 +365,7 @@
         device_clear_log_after_sync: chkVal(body, '#device_clear_log_after_sync'),
         push_port: numVal(body, '#push_port', 3001),
         push_auth_token: getVal(body, '#push_auth_token'),
+        enforce_assigned_device: chkVal(body, '#enforce_assigned_device'),
         mail_enabled: chkVal(body, '#mail_enabled'),
         mail_host: getVal(body, '#mail_host'),
         mail_port: numVal(body, '#mail_port', 587),

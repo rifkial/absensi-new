@@ -55,6 +55,11 @@ const DEFAULTS = {
   push_port: '3001',
   push_auth_token: '',
 
+  // Quando true, scan dari mesin fingerprint yang tidak ditunjuk untuk karyawan
+  // tersebut TIDAK disimpan sama sekali (tidak dihitung sebagai kehadiran).
+  // Default false supaya perilaku lama (simpan + tandai "Mesin lain") tetap berlaku.
+  enforce_assigned_device: 'false',
+
   // email
   mail_enabled: 'false',
   mail_host: 'smtp.gmail.com',
@@ -256,6 +261,7 @@ function normalize(payload = {}) {
   boolKey('device_clear_log_after_sync');
   intText('push_port', 1, 65535, 3001);
   text('push_auth_token', 200);
+  boolKey('enforce_assigned_device');
 
   // email
   boolKey('mail_enabled');

@@ -166,12 +166,19 @@ router.get(
   '/meta',
   auth.requireAuth,
   wrap(async (req, res) => {
-    const [departments, positions, shifts] = await Promise.all([
+    const [departments, positions, shifts, devices] = await Promise.all([
       db.queryAll('SELECT id, code, name FROM departments ORDER BY name'),
       db.queryAll('SELECT id, code, name FROM positions ORDER BY name'),
       db.queryAll(
         `SELECT id, code, name, start_time, end_time, work_days, late_tolerance_min
            FROM shifts WHERE is_active = 1 ORDER BY start_time, name`
+      ),
+      // Untuk dropdown "Mesin Fingerprint" di form karyawan. Mesin nonaktif
+      // tetap dikirim supaya karyawan yang sudah ditunjuk mesin itu tidak
+      // kehilangan nilai select-nya saat form dibuka.
+      db.queryAll(
+        `SELECT id, name, location, protocol, serial_number, is_active
+           FROM devices ORDER BY is_active DESC, name`
       ),
     ]);
 
@@ -181,6 +188,7 @@ router.get(
         departments,
         positions,
         shifts,
+        devices,
         // Katalog pengajuan untuk form admin/HR (izin, cuti, dinas).
         leave_categories: leaveCatalog.toPublicOptions(),
       },

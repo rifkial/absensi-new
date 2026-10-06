@@ -103,8 +103,15 @@ function createPushRouter() {
       if (table === parser.TABLES.ATTLOG) {
         records = parser.parseAttlogBody(req.body);
         const deviceId = await getOrCreateDeviceId(sn, req);
-        const result = await persistLogs({ deviceId, logs: records, source: 'push' });
+const result = await persistLogs({ deviceId, logs: records, source: 'push' });
         inserted = result.inserted;
+        if (result.filtered > 0) {
+          // Balasan tetap memakai jumlah baris hasil parsing (bukan inserted)
+          // supaya Stamp mesin tetap maju dan scan yang dibuang tidak dikirim ulang.
+          console.log(
+            `[push] ${sn}: ${result.filtered} scan dibuang karena mesin tidak sesuai yang ditunjuk.`
+          );
+        }
       } else if (table === parser.TABLES.FINGERTMP || table === parser.TABLES.BIODATA) {
         records = parser.parseBiometricBody(req.body);
         inserted = await saveTemplates(sn, records);

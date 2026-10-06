@@ -6,7 +6,7 @@ const { badRequest, notFound, conflict, str, boolParam, pagination, pageMeta } =
 const { toDate } = require('../utils/date');
 
 const SELECT_COLUMNS = `
-  e.id, e.employee_code, e.device_user_id, e.name, e.gender,
+  e.id, e.employee_code, e.device_user_id, e.device_id, e.name, e.gender,
   e.department_id, e.position_id, e.shift_id, e.phone, e.email, e.address,
   e.photo_path, e.hire_date, e.status, e.fingerprint_status, e.notes,
   e.annual_leave_quota, e.annual_leave_used, e.annual_leave_reset_at,
@@ -14,7 +14,8 @@ const SELECT_COLUMNS = `
   dep.name AS department_name,
   pos.name AS position_name,
   s.code AS shift_code, s.name AS shift_name,
-  s.start_time, s.end_time, s.late_tolerance_min, s.work_days
+  s.start_time, s.end_time, s.late_tolerance_min, s.work_days,
+  d.name AS device_name, d.location AS device_location
 `;
 
 const BASE_FROM = `
@@ -22,6 +23,7 @@ const BASE_FROM = `
   LEFT JOIN departments dep ON dep.id = e.department_id
   LEFT JOIN positions   pos ON pos.id = e.position_id
   LEFT JOIN shifts      s   ON s.id = e.shift_id
+  LEFT JOIN devices     d   ON d.id = e.device_id
 `;
 
 /**
@@ -63,6 +65,12 @@ async function list(query = {}) {
   if (fingerprintStatus) {
     where.push('e.fingerprint_status = ?');
     params.push(fingerprintStatus);
+  }
+
+  // Filter mesin fingerprint yang ditunjuk.
+  if (query.device_id) {
+    where.push('e.device_id = ?');
+    params.push(Number(query.device_id));
   }
 
   // Filter "sudah punya PIN mesin" / "belum"
@@ -141,6 +149,7 @@ function normalize(payload, { partial = false } = {}) {
     ['department_id', 'department_id'],
     ['position_id', 'position_id'],
     ['shift_id', 'shift_id'],
+    ['device_id', 'device_id'],
   ]) {
     if (payload[field] !== undefined) {
       const value = payload[field];
@@ -189,6 +198,19 @@ function normalize(payload, { partial = false } = {}) {
 }
 
 /**
+ * Pastikan device_id menunjuk mesin yang benar-benar ada.
+ *
+ * Kosong berarti karyawan boleh absen di semua mesin, jadi null tetap sah.
+ * Id yang tidak terdaftar ditolak agar tidak menyimpan mesin fiktif yang
+ * membuat semua scan karyawan selalu dianggap "mesin lain".
+ */
+async function assertDeviceExists(deviceId) {
+  if (deviceId === null || deviceId === undefined) return;
+  const row = await db.queryOne('SELECT id, name FROM devices WHERE id = ?', [deviceId]);
+  if (!row) throw badRequest('Mesin fingerprint yang dipilih tidak ditemukan di daftar mesin.');
+}
+
+/**
  * Validasi jatah cuti tahunan dari form.
  * Kosong berarti 0 (karyawan tanpa jatah cuti tahunan).
  */
@@ -232,6 +254,7 @@ async function create(payload) {
   data.fingerprint_status = data.fingerprint_status || 'belum';
 
   await assertUnique(data.employee_code, data.device_user_id || null);
+  await assertDeviceExists(data.device_id);
 
   const columns = Object.keys(data);
   const result = await db.execute(
@@ -262,6 +285,8 @@ async function update(id, payload, { actorId = null } = {}) {
   if (data.employee_code !== undefined || data.device_user_id !== undefined) {
     await assertUnique(nextCode, nextPin || null, id);
   }
+
+  await assertDeviceExists(data.device_id);
 
   // Ubah status enrollment sidik jari jadi "belum" bila PIN berubah.
   if (data.device_user_id && data.device_user_id !== current.device_user_id) {
@@ -315,7 +340,8 @@ async function stats() {
        SUM(status = 'nonaktif') AS nonaktif,
        SUM(status = 'resign') AS resign,
        SUM(device_user_id IS NOT NULL AND device_user_id <> '') AS punya_pin,
-       SUM(fingerprint_status = 'terdaftar') AS fp_terdaftar
+       SUM(fingerprint_status = 'terdaftar') AS fp_terdaftar,
+       SUM(device_id IS NOT NULL) AS punya_mesin
      FROM employees`
   );
   return row || {};
@@ -326,12 +352,36 @@ async function stats() {
  * Urutannya mengikuti parseCsv di adapter CSV.
  */
 const EMPLOYEE_CSV_TEMPLATE = [
-  'employee_code,device_user_id,name,gender,department_id,position_id,shift_id,phone,email,hire_date,status,annual_leave_quota',
-  '001,1,Ahmad Fauzi,L,1,1,1,081234567890,ahmad@contoh.com,2024-01-15,aktif,12',
-  '002,2,Siti Aminah,P,1,2,2,081234567891,siti@contoh.com,2024-02-01,aktif,12',
+  'employee_code,device_user_id,device_id,name,gender,department_id,position_id,shift_id,phone,email,hire_date,status,annual_leave_quota',
+  '001,1,1,Ahmad Fauzi,L,1,1,1,081234567890,ahmad@contoh.com,2024-01-15,aktif,12',
+  '002,2,1,Siti Aminah,P,1,2,2,081234567891,siti@contoh.com,2024-02-01,aktif,12',
+  '003,3,2,Budi Santoso,L,2,1,1,081234567892,budi@contoh.com,2024-03-01,aktif,12',
 ].join('\n');
 
 /** Impor karyawan dari array baris CSV (dipakai oleh endpoint /api/employees/import). */
+/**
+ * Terjemahkan isi kolom device_id dari impor menjadi id mesin.
+ *
+ * Menerima id angka maupun nama mesin (persis atau sebagian). Mengembalikan
+ * undefined bila tidak ada mesin yang cocok supaya pemanggil bisa melaporkannya
+ * per baris alih-alih gagal diam-diam.
+ */
+async function resolveDeviceRef(value) {
+  const raw = String(value ?? '').trim();
+  if (raw === '') return null;
+
+  if (/^\d+$/.test(raw)) {
+    const row = await db.queryOne('SELECT id FROM devices WHERE id = ?', [Number(raw)]);
+    return row ? Number(row.id) : undefined;
+  }
+
+  const row = await db.queryOne('SELECT id FROM devices WHERE name = ? OR name LIKE ? ORDER BY id LIMIT 1', [
+    raw,
+    `${raw}%`,
+  ]);
+  return row ? Number(row.id) : undefined;
+}
+
 async function importFromRows(rows) {
   if (!Array.isArray(rows) || rows.length === 0) {
     throw badRequest('Tidak ada baris data untuk diimpor.');
@@ -343,6 +393,7 @@ async function importFromRows(rows) {
   const idx = {
     employee_code: columnIndex(['employee_code', 'kode', 'nik', 'no']),
     device_user_id: columnIndex(['device_user_id', 'pin', 'userid', 'user id']),
+    device_id: columnIndex(['device_id', 'mesin', 'mesin_id', 'device', 'id_mesin', 'fingerprint']),
     name: columnIndex(['name', 'nama']),
     gender: columnIndex(['gender', 'jk', 'jenis_kelamin']),
     department_id: columnIndex(['department_id', 'departemen', 'dept', 'departemen_id']),
@@ -394,6 +445,18 @@ async function importFromRows(rows) {
       payload[key] = value === '' ? undefined : value;
     }
 
+    // device_id boleh berupa angka id ATAU nama mesin, karena operator
+    // umumnya melihat nama mesin di menu Perangkat, bukan id internal.
+    const deviceCell = get('device_id');
+    if (deviceCell !== '') {
+      const deviceId = await resolveDeviceRef(deviceCell);
+      if (deviceId === undefined) {
+        errors.push({ baris: i + 1, pesan: `Mesin "${deviceCell}" tidak ada di daftar mesin fingerprint.` });
+        continue;
+      }
+      payload.device_id = deviceId;
+    }
+
     try {
       const existing = await db.queryOne('SELECT id FROM employees WHERE employee_code = ?', [payload.employee_code]);
       if (existing) {
@@ -423,5 +486,6 @@ module.exports = {
   importFromRows,
   normalize,
   normalizeQuota,
+  assertDeviceExists,
   EMPLOYEE_CSV_TEMPLATE,
 };

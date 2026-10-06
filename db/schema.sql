@@ -84,6 +84,8 @@ CREATE TABLE IF NOT EXISTS employees (
   id                  INT UNSIGNED NOT NULL AUTO_INCREMENT,
   employee_code       VARCHAR(30)  NOT NULL COMMENT 'NIK / kode karyawan internal',
   device_user_id      VARCHAR(50)  NULL     COMMENT 'PIN pada mesin fingerprint',
+  device_id           INT UNSIGNED NULL
+                      COMMENT 'Mesin fingerprint yang ditunjuk untuk karyawan ini. NULL = boleh absen di mesin mana saja',
   name                VARCHAR(120) NOT NULL,
   gender              ENUM('L','P') NULL,
   department_id       INT UNSIGNED NULL,
@@ -112,6 +114,7 @@ CREATE TABLE IF NOT EXISTS employees (
   KEY ix_employees_dept (department_id),
   KEY ix_employees_status (status),
   KEY ix_employees_name (name),
+  KEY ix_employees_device (device_id),
   CONSTRAINT fk_employees_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL,
   CONSTRAINT fk_employees_position   FOREIGN KEY (position_id)   REFERENCES positions   (id) ON DELETE SET NULL,
   CONSTRAINT fk_employees_shift      FOREIGN KEY (shift_id)      REFERENCES shifts      (id) ON DELETE SET NULL
@@ -302,6 +305,7 @@ CREATE TABLE IF NOT EXISTS sync_logs (
   inserted     INT UNSIGNED   NOT NULL DEFAULT 0,
   duplicated   INT UNSIGNED   NOT NULL DEFAULT 0,
   unmatched    INT UNSIGNED   NOT NULL DEFAULT 0 COMMENT 'PIN mesin tidak ada di master karyawan',
+  filtered     INT UNSIGNED   NOT NULL DEFAULT 0 COMMENT 'Scan dibuang karena mesin tidak sesuai yang ditunjuk',
   message      VARCHAR(500)   NULL,
   PRIMARY KEY (id),
   KEY ix_sync_device (device_id, started_at),
@@ -395,7 +399,10 @@ CREATE TABLE IF NOT EXISTS duty_checkins (
   latitude       DECIMAL(10,7) NULL    COMMENT 'Koordinat lintang -90..90',
   longitude      DECIMAL(10,7) NULL    COMMENT 'Koordinat bujur -180..180',
   accuracy_m     SMALLINT UNSIGNED NULL COMMENT 'Akurasi GPS dalam meter',
-  address        VARCHAR(255) NULL     COMMENT 'Alamat hasil reverse geocode',
+  address        VARCHAR(255) NULL     COMMENT 'Nama lokasi hasil reverse geocode',
+  district       VARCHAR(120) NULL     COMMENT 'Kecamatan hasil reverse geocode',
+  city           VARCHAR(120) NULL     COMMENT 'Kota/kabupaten hasil reverse geocode',
+  province       VARCHAR(120) NULL     COMMENT 'Provinsi hasil reverse geocode',
   selfie_path    VARCHAR(255) NULL     COMMENT 'Lokasi file foto selfie',
   note           VARCHAR(500) NULL     COMMENT 'Keterangan tugas',
   leave_id       INT UNSIGNED NULL     COMMENT 'Pengajuan dinas_luar terkait',
@@ -462,7 +469,64 @@ CREATE TABLE IF NOT EXISTS holidays (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------
--- 19. Foreign key app_users.employee_id
+-- 19. Foreign key employees.device_id
+--     Ditambahkan di sini (bukan di definisi tabel) karena tabel devices
+--     dibuat setelah employees. Idempoten: dilewati bila sudah ada.
+-- ---------------------------------------------------------------------------
+SET @fk_dev_exists = (
+  SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+   WHERE CONSTRAINT_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'employees'
+     AND CONSTRAINT_NAME = 'fk_employees_device'
+);
+SET @fk_dev_sql = IF(@fk_dev_exists > 0,
+  'DO 0',
+  'ALTER TABLE employees ADD CONSTRAINT fk_employees_device FOREIGN KEY (device_id) REFERENCES devices (id) ON DELETE SET NULL'
+);
+PREPARE stmt FROM @fk_dev_sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------------
+-- 20. Tanda absen dari mesin fingerprint yang tidak ditunjuk
+--     Log tetap tersimpan dan tetap dihitung sebagai kehadiran, tetapi diberi
+--     label berbeda supaya admin bisa melihat karyawan yang absen di mesin lain.
+-- ---------------------------------------------------------------------------
+SET @col_wrong_dev = (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'attendance_daily'
+     AND COLUMN_NAME = 'is_wrong_device'
+);
+SET @col_wrong_dev_sql = IF(@col_wrong_dev > 0,
+  'DO 0',
+  'ALTER TABLE attendance_daily ADD COLUMN is_wrong_device TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''1 = ada scan dari mesin selain mesin yang ditunjuk'''
+);
+PREPARE stmt FROM @col_wrong_dev_sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------------
+-- 20b. Jumlah scan yang dibuang saat sinkronisasi
+--      Berisi hanya bila pengaturan enforce_assigned_device aktif, yaitu scan
+--      dari mesin yang tidak ditunjuk untuk karyawan tersebut tidak disimpan.
+-- ---------------------------------------------------------------------------
+SET @col_filtered = (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+   WHERE TABLE_SCHEMA = DATABASE()
+     AND TABLE_NAME = 'sync_logs'
+     AND COLUMN_NAME = 'filtered'
+);
+SET @col_filtered_sql = IF(@col_filtered > 0,
+  'DO 0',
+  'ALTER TABLE sync_logs ADD COLUMN filtered INT UNSIGNED NOT NULL DEFAULT 0 COMMENT ''Scan dibuang karena mesin tidak sesuai yang ditunjuk'''
+);
+PREPARE stmt FROM @col_filtered_sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- ---------------------------------------------------------------------------
+-- 21. Foreign key app_users.employee_id
 --     Ditambahkan di sini (bukan di definisi tabel) karena tabel employees
 --     dibuat setelah app_users. Idempoten: dilewati bila sudah ada.
 -- ---------------------------------------------------------------------------
