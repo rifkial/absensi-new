@@ -66,14 +66,20 @@ async function mailConfig() {
 
 /**
  * Konfigurasi WhatsApp gabungan UI + .env.
- * @returns {Promise<{enabled:boolean, url:string, token:string, target:string,
+ * @returns {Promise<{enabled:boolean, provider:string, url:string, token:string, target:string,
  *   targetField:string, messageField:string, configured:boolean}>}
  */
 async function whatsappConfig() {
   const stored = await settingsService.getStoredMap();
 
+  const rawProvider = Object.prototype.hasOwnProperty.call(stored, 'whatsapp_provider')
+    ? stored.whatsapp_provider
+    : config.whatsapp.provider;
+  const provider = String(rawProvider || 'gateway').trim().toLowerCase() === 'self' ? 'self' : 'gateway';
+
   const wa = {
     enabled: pickBool(stored, 'whatsapp_enabled', config.whatsapp.enabled),
+    provider,
     url: pick(stored, 'whatsapp_url', config.whatsapp.url),
     token: pick(stored, 'whatsapp_token', config.whatsapp.token),
     target: pick(stored, 'whatsapp_target', config.whatsapp.target),
@@ -81,7 +87,7 @@ async function whatsappConfig() {
     messageField: pick(stored, 'whatsapp_field_message', config.whatsapp.messageField, 'message'),
   };
 
-  wa.configured = Boolean(wa.url && wa.target);
+  wa.configured = provider === 'self' ? Boolean(wa.target) : Boolean(wa.url && wa.target);
   return wa;
 }
 

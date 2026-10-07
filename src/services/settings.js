@@ -68,11 +68,17 @@ const DEFAULTS = {
 
   // whatsapp
   whatsapp_enabled: 'false',
+  whatsapp_provider: 'gateway',
   whatsapp_url: '',
   whatsapp_token: '',
   whatsapp_target: '',
   whatsapp_field_target: 'target',
   whatsapp_field_message: 'message',
+  whatsapp_self_autostart: 'true',
+  whatsapp_self_min_delay_ms: '4000',
+  whatsapp_self_max_delay_ms: '9000',
+  whatsapp_self_per_minute: '12',
+  whatsapp_self_daily_limit: '300',
 
   // keamanan login
   login_rate_limit_enabled: 'true',
@@ -271,11 +277,20 @@ function normalize(payload = {}) {
 
   // whatsapp
   boolKey('whatsapp_enabled');
+  if (payload.whatsapp_provider !== undefined) {
+    const p = String(payload.whatsapp_provider || '').trim().toLowerCase();
+    out.whatsapp_provider = p === 'self' ? 'self' : 'gateway';
+  }
   text('whatsapp_url', 255);
   text('whatsapp_token', 255);
   text('whatsapp_target', 120);
   text('whatsapp_field_target', 60, DEFAULTS.whatsapp_field_target);
   text('whatsapp_field_message', 60, DEFAULTS.whatsapp_field_message);
+  boolKey('whatsapp_self_autostart');
+  intText('whatsapp_self_min_delay_ms', 1000, 60000, 4000);
+  intText('whatsapp_self_max_delay_ms', 1000, 120000, 9000);
+  intText('whatsapp_self_per_minute', 1, 60, 12);
+  intText('whatsapp_self_daily_limit', 10, 5000, 300);
 
   // keamanan login
   boolKey('login_rate_limit_enabled');

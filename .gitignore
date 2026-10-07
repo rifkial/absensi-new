@@ -6,6 +6,7 @@ npm-debug.log*
 storage/uploads/*
 !storage/uploads/.gitkeep
 storage/tmp/
+storage/whatsapp-session/
 .DS_Store
 Thumbs.db
 *.xlsx

@@ -1171,7 +1171,7 @@ router.get(
   auth.requirePermission('attendance:read'),
   wrap(async (req, res) => {
     const rows = await db.queryAll(
-      `SELECT e.id, e.employee_code, e.name, e.device_user_id,
+      `SELECT e.id, e.employee_code, e.name, e.device_user_id, e.phone,
               e.department_id, dep.name AS department_name
          FROM employees e
          LEFT JOIN departments dep ON dep.id = e.department_id

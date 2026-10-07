@@ -18,14 +18,15 @@ Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 - Portal mandiri karyawan (`role employee`): rekap, pengajuan, check-in dinas GPS + selfie
 - Auto-sync mesin MATI default (tombol hidup/mati di menu Perangkat, tanpa restart)
 - Sync manual jalan di background (202 + polling status, UI tidak menggantung)
-- Notifikasi realtime SSE + bell unread + halaman riwayat `/#/notifications` (pagination, admin & employee), email SMTP + WhatsApp gateway
+- Notifikasi realtime SSE + bell unread + halaman riwayat `/#/notifications` (pagination, admin & employee), email SMTP + WhatsApp nomor sendiri (scan QR, antrean anti-banned FIFO + jeda acak + batas/menit/hari) / gateway
+- WhatsApp broadcast multi-nomor (koma) + tombol pilih nomor dari data karyawan (langsung tersimpan)
 - Peta Leaflet lokal (tanpa CDN luar, tile/search via proxy server)
 - Audit log, throttle login, JWT auth
 - Frontend statis di `public/` (tanpa build, tanpa bundler)
 
 ## Teknologi
 
-Node.js >= 18, Express 4, MySQL 5.7+ / MariaDB 10.4+ (XAMPP), JWT, bcryptjs, dayjs, exceljs, multer, nodemailer.
+Node.js >= 18, Express 4, MySQL 5.7+ / MariaDB 10.4+ (XAMPP), JWT, bcryptjs, dayjs, exceljs, multer, nodemailer, whatsapp-web.js, qrcode.
 
 ## Struktur
 
@@ -34,15 +35,15 @@ src/server.js        # entry: 2 listener (web 3000 + PUSH 3001) + scheduler sync
 src/app.js           # Express app, REST API, static frontend, proxy geo (tile/search)
 src/config.js        # baca .env
 src/db/              # pool, migrate, seed, upgrades
-src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications
-src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels
+src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim)
+src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels, whatsappSelf (QR + antrean)
 src/devices/         # adapter: zkteco-tcp, pushhttp, csv
 src/middleware/      # auth (RBAC + cache user 30s), error
 db/schema.sql        # skema idempoten
 public/              # UI statis (index.html, css/, js/core+app+pages/, vendor/leaflet)
 public/vendor/leaflet/ # Leaflet lokal (tanpa CDN luar)
 tools/               # probe, scan, sync-once, cek-*
-test/                # node:test (121 tes: shifts, attendance, travelLetter, realtime, dutyRange, ...)
+test/                # node:test (125 tes: shifts, attendance, travelLetter, realtime, dutyRange, whatsappThrottle, ...)
 ```
 
 ## Syarat
@@ -91,7 +92,9 @@ Salin `.env.example` ke `.env`. Kunci penting:
 | `DEVICE_CLEAR_LOG_AFTER_SYNC` | `true` = hapus log di mesin setelah sync |
 | `ATTENDANCE_CUTOFF_TIME`, `DEFAULT_LATE_TOLERANCE`, `MAX_DAILY_WORK_MINUTES` | aturan rekap |
 | `MAIL_*` | SMTP (aktif bila `MAIL_ENABLED=true`) |
-| `WHATSAPP_*` | gateway WA (aktif bila `WHATSAPP_ENABLED=true`) |
+| `WHATSAPP_PROVIDER` | `self` (nomor sendiri, scan QR) atau `gateway` (Fonnte/Wablas/custom), default `gateway` |
+| `WHATSAPP_*` | gateway WA (aktif bila `WHATSAPP_ENABLED=true`); `WHATSAPP_SELF_SESSION` sesi QR, `WHATSAPP_SELF_AUTOSTART` sambung otomatis, `WHATSAPP_SELF_MIN/MAX_DELAY_MS` + `WHATSAPP_SELF_PER_MINUTE` + `WHATSAPP_SELF_DAILY_LIMIT` anti-banned |
+| `WHATSAPP_TARGET` | nomor TUJUAN (bukan pengirim), boleh banyak koma untuk broadcast, mis. `62812xxxxxxx, 62813xxxxxxx` |
 | `BACKFILL_DAYS` | backfill rekap saat generate |
 
 ## Script
@@ -106,7 +109,7 @@ Salin `.env.example` ke `.env`. Kunci penting:
 | `npm run sync` | satu siklus sync lalu keluar (`--force`, `--days N`, `--device ID`) |
 | `npm run probe -- <ip> [port] [pass]` | tes koneksi ke satu mesin |
 | `npm run scan -- [prefix]` | pindai subnet cari mesin (contoh `192.168.1`) |
-| `npm test` / `npm run build` | `node --test test/**/*.test.js` (121 tes) |
+| `npm test` / `npm run build` | `node --test test/**/*.test.js` (125 tes) |
 | `npm run lint` | eslint (butuh `eslint.config.js`, lihat migrasi ESLint v9) |
 
 ## Peran & izin
@@ -138,6 +141,12 @@ npm run scan -- 192.168.1
 ```
 
 Untuk mode PUSH, isi IP server + `PUSH_PORT` di menu ADMS mesin. Bila `PUSH_AUTH_TOKEN` diisi, mesin wajib kirim token sama.
+
+## WhatsApp nomor sendiri (scan QR)
+
+- Pilih Provider `Nomor sendiri` di Pengaturan > Notifikasi, Simpan, klik Hubungkan, scan QR dari WhatsApp HP (Perangkat Tertaut). Sesi persisten di `storage/whatsapp-session` (di-gitignore). Restart server dulu setelah update kode agar route `/api/whatsapp` + kolom `phone` aktif.
+- Semua kirim provider `self` antre FIFO: satu per satu + jeda acak + batas per menit/hari (anti-banned). Gagal self + gateway lengkap = fallback gateway otomatis.
+- Broadcast: isi Nomor Penerima dengan koma (`62812xxxxxxx, 62813xxxxxxx`) atau klik `Pilih dari karyawan` (nomor HP karyawan, langsung tersimpan). Uji `Kirim uji` memakai nomor pertama bila banyak.
 
 ## Pengajuan & surat dinas
 
@@ -185,6 +194,9 @@ GET  /api/employees/history/export/excel?tab=leave&status=all&from=&to=
 GET  /api/reports/preview?format=rekap_harian&from=&to=&page=1&per_page=50   # pratinjau pagination, ekspor tetap full
 GET  /api/notifications?unread=1&limit= | ?per_page=&page=   # bell = unread saja; halaman riwayat = pagination + meta
 GET  /api/notifications/unread-count
+GET  /api/whatsapp/self/status                      # sesi WA self + policy antrean (butuh notify:send)
+POST /api/whatsapp/self/start | /stop | /logout     # Hubungkan/QR, Putuskan, hapus sesi
+POST /api/whatsapp/self/test {target}               # target boleh 1 nomor; broadcast via Nomor Penerima (koma)
 GET  /api/notifications/stream?token=               # SSE (1 koneksi per user, lama ditutup otomatis)
 GET  /api/geo/tiles/{z}/{x}/{y}.png, /api/geo/search?q=
 GET  /api/attendance, /api/reports/preview, /api/audit, /api/me

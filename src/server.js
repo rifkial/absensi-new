@@ -83,6 +83,9 @@ async function start() {
     console.log('  [scheduler] Auto-sync MATI (SYNC_ENABLED=false). Sinkron manual via tombol UI.');
   }
 
+  // 6) WhatsApp nomor sendiri: lanjutkan sesi bila provider self + autostart.
+  require('./services/whatsappSelf').maybeAutostart();
+
   console.log('='.repeat(64));
   console.log('  Server siap.');
   // Kredensial tidak dicetak di sini. Password awal hanya ditampilkan sekali

@@ -119,20 +119,85 @@ async function sendEmail({ to, subject, body }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Kirim WhatsApp lewat HTTP gateway generik.
- *
- * Konfigurasi diambil dari UI Pengaturan (jatuh ke .env bila belum diisi):
- * URL gateway + token, dan nama field JSON untuk target & pesan. Bawaannya
- * { target, message } yang cocok dengan Fonnte/Wablas.
+ * Pecah daftar penerima: "62812xxx, 62813xxx" -> ["62812xxx", "62813xxx"].
+ * Dipakai kolom Nomor Penerima Default supaya bisa broadcast multi-nomor.
  */
-async function sendWhatsApp({ target, message }) {
+function splitTargets(value) {
+  const list = String(value || '')
+    .split(/[,;\n]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return [...new Set(list)];
+}
+
+/**
+ * Kirim WhatsApp via provider aktif.
+ *
+ * - provider 'self': kirim dari nomor sendiri (whatsapp-web.js, scan QR).
+ * - provider 'gateway': HTTP gateway generik (Fonnte/Wablas/custom).
+ *
+ * Target boleh banyak (koma): tiap nomor dikirim satu per satu lewat antrean
+ * anti-banned, jadi broadcast aman untuk nomor sendiri.
+ *
+ * Bila provider 'self' belum terhubung tapi gateway terisi lengkap, kirim
+ * jatuh ke gateway supaya notifikasi penting tetap jalan.
+ */
+async function sendWhatsApp({ target, message, targets } = {}) {
   const wa = await channels.whatsappConfig();
 
   if (!wa.enabled) return { ok: false, skipped: true, reason: 'WhatsApp tidak diaktifkan.' };
-  if (!wa.url) return { ok: false, skipped: true, reason: 'URL gateway WhatsApp belum diisi di Pengaturan.' };
 
-  const recipient = target || wa.target;
-  if (!recipient) return { ok: false, skipped: true, reason: 'Nomor tujuan WhatsApp belum diisi.' };
+  const recipients = [
+    ...splitTargets(targets),
+    ...splitTargets(target),
+    ...splitTargets(wa.target),
+  ].filter((t, i, arr) => arr.indexOf(t) === i);
+  if (recipients.length === 0) return { ok: false, skipped: true, reason: 'Nomor tujuan WhatsApp belum diisi.' };
+
+  if (wa.provider === 'self') {
+    const waSelf = require('./whatsappSelf');
+    const results = [];
+    for (const recipient of recipients) {
+      const direct = await waSelf.send({ target: recipient, message });
+      if (direct.ok) {
+        results.push({ target: recipient, ...direct });
+        continue;
+      }
+      // Fallback ke gateway hanya bila gateway terisi lengkap.
+      if (!wa.url) {
+        results.push({ target: recipient, ...direct });
+        continue;
+      }
+      const viaGateway = await sendViaGateway(wa, recipient, message);
+      if (viaGateway.ok) {
+        viaGateway.fallback = true;
+        viaGateway.note = `Nomor sendiri gagal (${direct.error || 'belum terhubung'}), terkirim via gateway.`;
+        results.push({ target: recipient, ...viaGateway });
+      } else {
+        results.push({ target: recipient, ...direct });
+      }
+    }
+    const okCount = results.filter((r) => r.ok).length;
+    return {
+      ok: okCount > 0,
+      sent: okCount,
+      total: results.length,
+      results,
+      ...(results.length === 1 ? results[0] : {}),
+    };
+  }
+
+  if (recipients.length === 1) return sendViaGateway(wa, recipients[0], message);
+  const results = [];
+  for (const recipient of recipients) {
+    results.push({ target: recipient, ...(await sendViaGateway(wa, recipient, message)) });
+  }
+  const okCount = results.filter((r) => r.ok).length;
+  return { ok: okCount > 0, sent: okCount, total: results.length, results };
+}
+
+async function sendViaGateway(wa, recipient, message) {
+  if (!wa.url) return { ok: false, skipped: true, reason: 'URL gateway WhatsApp belum diisi di Pengaturan.' };
 
   const payload = {
     [wa.targetField]: recipient,
@@ -349,6 +414,29 @@ async function status() {
   const mail = await channels.mailConfig();
   const wa = await channels.whatsappConfig();
 
+  let waSelf = null;
+  if (wa.provider === 'self') {
+    try {
+      waSelf = await require('./whatsappSelf').status();
+    } catch {
+      waSelf = null;
+    }
+  }
+
+  const waProblem = !wa.enabled
+    ? null
+    : wa.provider === 'self'
+      ? (!wa.target
+        ? 'Nomor tujuan default belum diisi.'
+        : !waSelf?.ready
+          ? 'Nomor sendiri belum terhubung. Scan QR di Pengaturan.'
+          : null)
+      : !wa.url
+        ? 'URL gateway belum diisi.'
+        : !wa.target
+          ? 'Nomor tujuan default belum diisi.'
+          : null;
+
   statusCache = {
     email: {
       enabled: mail.enabled,
@@ -366,16 +454,14 @@ async function status() {
     },
     whatsapp: {
       enabled: wa.enabled,
+      provider: wa.provider,
       configured: wa.configured,
-      gateway: wa.url ? maskUrl(wa.url) : null,
+      gateway: wa.provider === 'self'
+        ? (waSelf?.phone ? `Nomor sendiri +${waSelf.phone}` : 'Nomor sendiri (scan QR)')
+        : (wa.url ? maskUrl(wa.url) : null),
       target: wa.target || null,
-      problem: !wa.enabled
-        ? null
-        : !wa.url
-          ? 'URL gateway belum diisi.'
-          : !wa.target
-            ? 'Nomor tujuan default belum diisi.'
-            : null,
+      self: waSelf,
+      problem: waProblem,
     },
   };
   statusStamp = Date.now();
@@ -404,5 +490,6 @@ module.exports = {
   formatMinutes,
   sendEmail,
   sendWhatsApp,
+  splitTargets,
   DEFAULT_TEMPLATES,
 };

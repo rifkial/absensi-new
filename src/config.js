@@ -110,11 +110,18 @@ const config = {
 
   whatsapp: {
     enabled: bool('WHATSAPP_ENABLED', false),
+    provider: str('WHATSAPP_PROVIDER', 'gateway'),
     url: str('WHATSAPP_URL', ''),
     token: str('WHATSAPP_TOKEN', ''),
     target: str('WHATSAPP_TARGET', ''),
     targetField: str('WHATSAPP_FIELD_TARGET', 'target'),
     messageField: str('WHATSAPP_FIELD_MESSAGE', 'message'),
+    selfSessionPath: str('WHATSAPP_SELF_SESSION', 'storage/whatsapp-session'),
+    selfAutostart: bool('WHATSAPP_SELF_AUTOSTART', true),
+    selfMinDelayMs: int('WHATSAPP_SELF_MIN_DELAY_MS', 4000),
+    selfMaxDelayMs: int('WHATSAPP_SELF_MAX_DELAY_MS', 9000),
+    selfPerMinute: int('WHATSAPP_SELF_PER_MINUTE', 12),
+    selfDailyLimit: int('WHATSAPP_SELF_DAILY_LIMIT', 300),
   },
 };
 

@@ -76,7 +76,8 @@
     return '<div class="field"><label>' + esc(label) + '</label><input type="' + type + '" id="' + id + '" value="' + esc(v) + '"' + attrs + '>' + helpHtml + '</div>';
   }
 
-  function toBool(v) {
+  function toBool(v, def) {
+    if (v === undefined || v === null || v === '') return Boolean(def);
     if (v === true || v === 1) return true;
     if (!v) return false;
     return ['1', 'true', 'yes', 'on', 'ya'].indexOf(String(v).toLowerCase()) >= 0;
@@ -284,16 +285,33 @@
         '</div>' +
 
         '<div class="card">' +
-          '<div class="card-header"><div><h2 class="card-title">WhatsApp Gateway</h2><p class="card-subtitle">Fonnte, Wablas atau gateway custom</p></div></div>' +
+          '<div class="card-header"><div><h2 class="card-title">WhatsApp</h2><p class="card-subtitle">Nomor sendiri (scan QR) atau gateway</p></div></div>' +
           '<div class="card-body">' +
             '<div class="form-grid">' +
               '<div class="field checkbox full"><input type="checkbox" id="whatsapp_enabled"' + (toBool(s.whatsapp_enabled) ? ' checked' : '') + '><label for="whatsapp_enabled">Aktifkan WhatsApp</label></div>' +
-              field('URL Gateway', 'whatsapp_url', s.whatsapp_url, 'url', 'https://api.fonnte.com/send') +
-              field('Token/Bearer', 'whatsapp_token', s.whatsapp_token, 'password') +
-              field('Nomor Target Default', 'whatsapp_target', s.whatsapp_target, 'text', '62812xxxxxxx') +
-              field('Field Target (JSON)', 'whatsapp_field_target', s.whatsapp_field_target, 'text', 'target') +
-              field('Field Pesan (JSON)', 'whatsapp_field_message', s.whatsapp_field_message, 'text', 'message') +
+              '<div class="field"><label for="whatsapp_provider">Provider</label><select id="whatsapp_provider">' +
+                '<option value="self"' + ((s.whatsapp_provider || 'gateway') === 'self' ? ' selected' : '') + '>Nomor sendiri (scan QR)</option>' +
+                '<option value="gateway"' + ((s.whatsapp_provider || 'gateway') !== 'self' ? ' selected' : '') + '>Gateway (Fonnte/Wablas/custom)</option>' +
+              '</select><span class="help">Nomor sendiri = kirim dari HP sendiri, tanpa biaya gateway.</span></div>' +
+              '<div class="field checkbox full"><input type="checkbox" id="whatsapp_self_autostart"' + (toBool(s.whatsapp_self_autostart, true) ? ' checked' : '') + '><label for="whatsapp_self_autostart">Sambungkan otomatis saat server nyala (provider nomor sendiri)</label></div>' +
+              '<div id="waGatewayFields" style="display:contents">' +
+              field('URL Gateway', 'whatsapp_url', s.whatsapp_url, 'url', 'https://api.fonnte.com/send', '', '', 'Contoh: https://api.fonnte.com/send. Hanya provider Gateway. Jadi cadangan bila nomor sendiri gagal.') +
+              field('Token/Bearer', 'whatsapp_token', s.whatsapp_token, 'password', 'isi-token-gateway-disini') +
+              '</div>' +
+              field('Nomor Penerima Default', 'whatsapp_target', s.whatsapp_target, 'text', '62812xxxxxxx, 62813xxxxxxx', '', '', 'Bisa banyak, pisahkan koma untuk broadcast. Contoh: 62812xxxxxxx, 62813xxxxxxx. Ini nomor TUJUAN, bukan pengirim — pengirim = HP yang scan QR.') +
+              '<div class="field"><label>&nbsp;</label><button type="button" class="btn sm" id="waPickEmp">Pilih dari karyawan</button><span class="help">Ambil nomor HP dari data karyawan.</span></div>' +
+              field('Field Target (JSON)', 'whatsapp_field_target', s.whatsapp_field_target, 'text', 'target', '', '', 'Contoh Fonnte: target. Contoh Wablas: phone.') +
+              field('Field Pesan (JSON)', 'whatsapp_field_message', s.whatsapp_field_message, 'text', 'message', '', '', 'Contoh Fonnte: message. Contoh Wablas: message.') +
+              field('Jeda WA min (ms)', 'whatsapp_self_min_delay_ms', s.whatsapp_self_min_delay_ms, 'number', '', '1000', '60000', 'Jeda acak antar pesan. Makin besar makin aman dari banned.') +
+              field('Jeda WA maks (ms)', 'whatsapp_self_max_delay_ms', s.whatsapp_self_max_delay_ms, 'number', '', '1000', '120000') +
+              field('Maks WA / menit', 'whatsapp_self_per_minute', s.whatsapp_self_per_minute, 'number', '', '1', '60') +
+              field('Maks WA / hari', 'whatsapp_self_daily_limit', s.whatsapp_self_daily_limit, 'number', '', '10', '5000') +
             '</div>' +
+            '<div id="waSelfBox" style="margin-top:12px"></div>' +
+            '<div class="callout mt"><strong>Nomor sendiri (anti-banned)</strong> ' +
+              'Klik Simpan dulu, lalu klik "Hubungkan" dan scan QR dari WhatsApp HP (Perangkat Tertaut). ' +
+              'Kirim massal otomatis antre FIFO + jeda acak + batas per menit/hari. ' +
+              'Sesi tersimpan di server, scan cukup sekali sampai logout. Bila nomor sendiri gagal tapi gateway terisi, kirim otomatis lewat gateway.</div>' +
           '</div>' +
         '</div>' +
 
@@ -322,6 +340,199 @@
       '</div>';
 
     bindSave();
+    bindWaSelf();
+    bindWaPickEmp();
+    toggleWaGateway();
+    var providerSel = document.getElementById('whatsapp_provider');
+    if (providerSel) providerSel.addEventListener('change', toggleWaGateway);
+  }
+
+  function bindWaPickEmp() {
+    var btn = document.getElementById('waPickEmp');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      var targetInput = document.getElementById('whatsapp_target');
+      var existing = targetInput ? targetInput.value : '';
+      var picked = {};
+      existing.split(/[,;\n]+/).forEach(function (p) {
+        var t = p.trim();
+        if (t) picked[t] = true;
+      });
+      App.modal({
+        title: 'Pilih Nomor Karyawan',
+        bodyHtml:
+          '<div class="field"><label>Cari</label><input type="text" id="waEmpSearch" placeholder="Nama / kode..."></div>' +
+          '<div id="waEmpList">' + App.loading('Memuat karyawan...') + '</div>',
+        actions: [
+          { label: 'Batal' },
+          { label: 'Pakai Nomor Ini', className: 'primary', value: 'use' },
+        ],
+        onAction: function (value, el) {
+          if (value !== 'use') return true;
+          el.querySelectorAll('.waEmp:checked').forEach(function (cb) {
+            if (cb.value) picked[cb.value] = true;
+          });
+          var merged = Object.keys(picked).join(', ');
+          if (targetInput) targetInput.value = merged;
+          if (!App.can('settings:write')) {
+            App.toast(Object.keys(picked).length + ' nomor dipilih. Klik Simpan butuh admin.', 'warning');
+            return true;
+          }
+          api.put('/settings', { whatsapp_target: merged })
+            .then(function () { App.toast(Object.keys(picked).length + ' nomor disimpan.', 'success'); })
+            .catch(function (err) { App.toast('Nomor dipilih, tapi gagal simpan: ' + err.message, 'error'); });
+          return true;
+        },
+        onMount: function (el) {
+          var list = [];
+          var box = el.querySelector('#waEmpList');
+          function paint(filter) {
+            var q = String(filter || '').toLowerCase();
+            var show = list.filter(function (e) {
+              if (!q) return true;
+              return (e.name + ' ' + e.employee_code).toLowerCase().indexOf(q) >= 0;
+            });
+            box.innerHTML = show.length === 0
+              ? '<div class="empty-state">Tidak ada karyawan cocok / bernomor HP.</div>'
+              : show.map(function (e) {
+                  var checked = picked[e.phone] ? ' checked' : '';
+                  return '<label class="row" style="gap:8px;padding:4px 0">' +
+                    '<input type="checkbox" class="waEmp" value="' + esc(e.phone) + '"' + checked + '>' +
+                    '<span>' + esc(e.employee_code + ' - ' + e.name) + ' <span class="faint">' + esc(e.phone) + '</span></span>' +
+                  '</label>';
+                }).join('');
+          }
+          el.querySelector('#waEmpSearch').addEventListener('input', function () { paint(this.value); });
+          api.get('/employees/options/list')
+            .then(function (res) {
+              var rows = res.data || [];
+              if (rows.length > 0 && !rows[0].phone) {
+                box.innerHTML = '<div class="empty-state">Server belum membawa nomor HP.<br>Restart server (<code>npm run dev</code>) lalu buka lagi.</div>';
+                return;
+              }
+              list = rows.filter(function (e) { return e.phone; });
+              paint('');
+            })
+            .catch(function (err) { box.innerHTML = '<div class="empty-state">Gagal memuat: ' + esc(err.message) + '</div>'; });
+        },
+      });
+    });
+  }
+
+  function toggleWaGateway() {
+    var sel = document.getElementById('whatsapp_provider');
+    var wrap = document.getElementById('waGatewayFields');
+    if (!sel || !wrap) return;
+    wrap.style.display = sel.value === 'self' ? 'none' : 'contents';
+  }
+
+  var waSelfTimer = null;
+
+  function bindWaSelf() {
+    if (waSelfTimer) { clearInterval(waSelfTimer); waSelfTimer = null; }
+    var box = document.getElementById('waSelfBox');
+    if (!box) return;
+    if (!App.can('notify:send')) {
+      box.innerHTML = '<div class="callout">Status WhatsApp nomor sendiri hanya untuk Admin/HR.</div>';
+      return;
+    }
+    loadWaSelf();
+    waSelfTimer = setInterval(function () {
+      if (!document.getElementById('waSelfBox')) {
+        clearInterval(waSelfTimer);
+        waSelfTimer = null;
+        return;
+      }
+      loadWaSelf(true);
+    }, 5000);
+  }
+
+  function loadWaSelf(quiet) {
+    var box = document.getElementById('waSelfBox');
+    if (!box) return;
+    if (!quiet) box.innerHTML = App.loading('Memuat status WhatsApp...');
+    api.get('/whatsapp/self/status')
+      .then(function (res) { paintWaSelf(res.data || {}); })
+      .catch(function (err) {
+        if (!quiet) box.innerHTML = '<div class="callout warning">Status WA gagal dimuat: ' + esc(err.message) + '</div>';
+      });
+  }
+
+  function paintWaSelf(st) {
+    var box = document.getElementById('waSelfBox');
+    if (!box) return;
+    var badge = st.ready
+      ? '<span class="badge success">Terhubung' + (st.phone ? ' +' + esc(st.phone) : '') + '</span>'
+      : st.state === 'qr'
+        ? '<span class="badge warning">Menunggu scan QR</span>'
+        : '<span class="badge idle">' + esc(st.state || 'belum terhubung') + '</span>';
+    var q = st.queue || {};
+    var html = '<div class="callout"><strong>Nomor sendiri</strong> ' + badge +
+      (st.lastError ? '<div class="small" style="margin-top:4px">Catatan: ' + esc(st.lastError) + '</div>' : '') +
+      '<div class="small faint" style="margin-top:4px">Antrean: ' + (q.queued || 0) + ' menunggu | ' +
+        (q.sentLastMinute || 0) + '/' + (st.perMinute || '-') + '/menit | ' +
+        (q.sentToday || 0) + '/' + (st.dailyLimit || '-') + '/hari | jeda ' +
+        (st.minDelayMs || '-') + '-' + (st.maxDelayMs || '-') + ' ms</div></div>';
+
+    if (st.qrDataUrl) {
+      html += '<div style="text-align:center;margin:8px 0">' +
+        '<img src="' + st.qrDataUrl + '" alt="QR WhatsApp" style="width:280px;max-width:100%;border:1px solid var(--border);border-radius:8px">' +
+        '<div class="small faint">Buka WhatsApp HP &gt; Perangkat Tertaut &gt; Tautkan Perangkat, lalu scan.</div></div>';
+    }
+
+    html += '<div class="row" style="margin-top:8px">' +
+      '<button class="btn sm primary" id="waSelfStart">Hubungkan / Tampilkan QR</button>' +
+      '<button class="btn sm" id="waSelfStop">Putuskan</button>' +
+      '<button class="btn sm danger" id="waSelfLogout">Logout + hapus sesi</button>' +
+      '<button class="btn sm" id="waSelfTest">Kirim uji</button>' +
+    '</div>';
+
+    if (st.provider && st.provider !== 'self') {
+      html += '<div class="callout warning mt">Provider aktif masih <strong>Gateway</strong>. Pilih "Nomor sendiri", klik Simpan, lalu Hubungkan.</div>';
+    }
+
+    box.innerHTML = html;
+
+    document.getElementById('waSelfStart').addEventListener('click', function () {
+      var btn = this;
+      btn.disabled = true;
+      // Simpan dulu provider + centang aktif dari form, supaya klik Hubungkan
+      // tidak gagal 500 karena settings tersimpan masih 'gateway'/mati.
+      var providerEl = document.getElementById('whatsapp_provider');
+      var enabledEl = document.getElementById('whatsapp_enabled');
+      var savePayload = {};
+      if (providerEl) savePayload.whatsapp_provider = providerEl.value;
+      if (enabledEl) savePayload.whatsapp_enabled = enabledEl.checked;
+      api.put('/settings', savePayload)
+        .then(function () {
+          if (providerEl) providerEl.value = 'self';
+          return api.post('/whatsapp/self/start', {});
+        })
+        .then(function (res) { paintWaSelf(res.data || {}); App.toast('Sesi WhatsApp dimulai. Scan QR bila muncul.', 'success'); })
+        .catch(function (err) { App.toast(err.message, 'error'); })
+        .then(function () { btn.disabled = false; loadWaSelf(true); });
+    });
+    document.getElementById('waSelfStop').addEventListener('click', function () {
+      api.post('/whatsapp/self/stop', {})
+        .then(function (res) { paintWaSelf(res.data || {}); })
+        .catch(function (err) { App.toast(err.message, 'error'); });
+    });
+    document.getElementById('waSelfLogout').addEventListener('click', function () {
+      if (!confirm('Hapus sesi WhatsApp? HP perlu scan ulang.')) return;
+      api.post('/whatsapp/self/logout', {})
+        .then(function (res) { paintWaSelf(res.data || {}); })
+        .catch(function (err) { App.toast(err.message, 'error'); });
+    });
+    document.getElementById('waSelfTest').addEventListener('click', function () {
+      var target = (document.getElementById('whatsapp_target') || {}).value || '';
+      if (!target) { App.toast('Isi Nomor Penerima Default dulu (nomor HP tujuan).', 'error'); return; }
+      api.post('/whatsapp/self/test', { target: target })
+        .then(function (res) {
+          var d = res.data || {};
+          App.toast(d.ok ? 'Pesan uji terkirim.' : ('Gagal: ' + (d.error || 'unknown')), d.ok ? 'success' : 'error');
+        })
+        .catch(function (err) { App.toast(err.message, 'error'); });
+    });
   }
 
   function paintSystem(box, s) {
@@ -373,6 +584,12 @@
         mail_pass: getVal(body, '#mail_pass'),
         mail_from: getVal(body, '#mail_from'),
         whatsapp_enabled: chkVal(body, '#whatsapp_enabled'),
+        whatsapp_provider: getVal(body, '#whatsapp_provider'),
+        whatsapp_self_autostart: chkVal(body, '#whatsapp_self_autostart'),
+        whatsapp_self_min_delay_ms: numVal(body, '#whatsapp_self_min_delay_ms', 4000),
+        whatsapp_self_max_delay_ms: numVal(body, '#whatsapp_self_max_delay_ms', 9000),
+        whatsapp_self_per_minute: numVal(body, '#whatsapp_self_per_minute', 12),
+        whatsapp_self_daily_limit: numVal(body, '#whatsapp_self_daily_limit', 300),
         whatsapp_url: getVal(body, '#whatsapp_url'),
         whatsapp_token: getVal(body, '#whatsapp_token'),
         whatsapp_target: getVal(body, '#whatsapp_target'),

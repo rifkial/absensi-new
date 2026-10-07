@@ -395,8 +395,8 @@ onMount: function (modalEl) {
             'lalu klik Simpan. Perubahan langsung berlaku tanpa restart server. ' +
             'Bila kolomnya masih kosong, sistem memakai nilai bawaan dari berkas <code>.env</code>.</div>' +
             '<div class="callout warning"><strong>Catatan WhatsApp</strong>' +
-            'Pengiriman memakai WhatsApp Business API (Meta) atau gateway pihak ketiga seperti Fonnte/Wablas. ' +
-            'Nomor WhatsApp pribadi tidak bisa dikirim secara programatis tanpa gateway resmi.</div>' +
+            'Dua pilihan: <strong>Nomor sendiri (scan QR)</strong> — kirim dari HP sendiri tanpa gateway, ' +
+            'atau <strong>Gateway</strong> seperti Fonnte/Wablas. Nomor sendiri yang gagal otomatis lewat gateway bila gateway terisi.</div>' +
             '<div class="callout"><strong>Catatan Email</strong>' +
             'Untuk Gmail, buat App Password di pengaturan keamanan akun Google, lalu pakai sebagai password SMTP. ' +
             'Status di atas membaca konfigurasi yang benar-benar dipakai saat mengirim.</div>' +

@@ -18,6 +18,7 @@ const reportRoutes = require('./routes/reports');
 const settingsRoutes = require('./routes/settings');
 const auditRoutes = require('./routes/audit');
 const notificationRoutes = require('./routes/notifications');
+const whatsappRoutes = require('./routes/whatsapp');
 const meRoutes = require('./routes/me');
 
 /**
@@ -147,6 +148,7 @@ function createApp() {
   app.use('/api/settings', settingsRoutes);
   app.use('/api/audit', auditRoutes);
   app.use('/api/notifications', notificationRoutes);
+  app.use('/api/whatsapp', whatsappRoutes);
   app.use('/api/me', meRoutes);
 
   // Frontend
