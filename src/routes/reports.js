@@ -37,12 +37,23 @@ router.get(
       employee_id: req.query.employee_id,
       device_id: req.query.device_id,
       status: req.query.status,
-      limit: Math.min(2000, Number(req.query.limit) || 200),
+      limit: Math.min(50000, Number(req.query.limit) || 2000),
     });
 
-    // Batasi baris yang dikirim ke browser.
-    const limited = report.rows.slice(0, 500);
-    res.json({ ok: true, data: { ...report, rows: limited, meta: { ...report.meta, returned: limited.length } } });
+    // Pagination pratinjau. Ekspor Excel/CSV tetap memakai seluruh baris.
+    const perPage = Math.min(2000, Math.max(1, Number(req.query.per_page) || 50));
+    const total = report.rows.length;
+    const totalPages = Math.max(1, Math.ceil(total / perPage));
+    const page = Math.min(Math.max(1, Number(req.query.page) || 1), totalPages);
+    const paged = report.rows.slice((page - 1) * perPage, page * perPage);
+    res.json({
+      ok: true,
+      data: {
+        ...report,
+        rows: paged,
+        meta: { ...report.meta, total, page, per_page: perPage, total_pages: totalPages, returned: paged.length },
+      },
+    });
   })
 );
 

@@ -98,15 +98,16 @@
       });
 
       var dinasToday = (Number(todayStatus.dinas_luar) || 0) + (Number(todayStatus.dinas_dalam) || 0);
+      var hadirBersih = Number(todayStatus.hadir) || 0;
 
       root.querySelector('#dashBody').innerHTML =
         '<div class="stat-grid">' +
-          statCard('success', 'Hadir Hari Ini', App.formatNumber((todayStatus.hadir || 0) + dinasToday), 'dari ' + App.formatNumber(emp.aktif || 0) + ' karyawan, termasuk dinas ' + App.formatNumber(dinasToday) + ' (luar ' + App.formatNumber(todayStatus.dinas_luar || 0) + ', dalam ' + App.formatNumber(todayStatus.dinas_dalam || 0) + ')') +
+          statCard('success', 'Hadir Hari Ini', App.formatNumber(hadirBersih), 'dari ' + App.formatNumber(emp.aktif || 0) + ' karyawan aktif') +
           statCard('warning', 'Telat Hari Ini', App.formatNumber(todayStatus.telat || 0), 'keterlambatan masuk kerja') +
+          statCard('success', 'Dinas Hari Ini', App.formatNumber(dinasToday), 'luar ' + App.formatNumber(todayStatus.dinas_luar || 0) + ', dalam ' + App.formatNumber(todayStatus.dinas_dalam || 0)) +
           statCard('info', 'Izin / Sakit', App.formatNumber((todayStatus.izin || 0) + (todayStatus.sakit || 0)), 'izin ' + App.formatNumber(todayStatus.izin || 0) + ', sakit ' + App.formatNumber(todayStatus.sakit || 0)) +
           statCard('danger', 'Alpa Hari Ini', App.formatNumber(todayStatus.alpa || 0), 'tidak hadir tanpa keterangan') +
           statCard('', 'Belum Absen', App.formatNumber(todayStatus.belum || 0), 'scan belum tercatat hari ini') +
-          statCard('purple', 'Total Karyawan', App.formatNumber(emp.aktif || 0), App.formatNumber(emp.total || 0) + ' total, ' + App.formatNumber(emp.nonaktif || 0) + ' nonaktif') +
         '</div>' +
 
         '<div class="grid-2">' +
@@ -251,24 +252,30 @@
     }
 
     function renderNotifyCard(notify) {
-      if (!notify) return '';
-      var channels = notify.channels || [];
-      var enabled = channels.filter(function (c) { return c.enabled; });
+      if (!notify || !notify.email && !notify.whatsapp) return '';
+      var rows = [];
+      if (notify.email) rows.push({ label: 'Email', info: notify.email });
+      if (notify.whatsapp) rows.push({ label: 'WhatsApp', info: notify.whatsapp });
 
       return '<div class="card">' +
         '<div class="card-header">' +
           '<div><h2 class="card-title">Notifikasi</h2>' +
-          '<p class="card-subtitle">Kirim pengingat otomatis ke karyawan</p></div>' +
+          '<p class="card-subtitle">Status kanal pesan hari ini</p></div>' +
           (App.can('notify:send') ? '<button class="btn sm" id="btnNotifyLate">Kirim Notifikasi Telat</button>' : '') +
         '</div>' +
-        '<div class="card-body">' +
-          (enabled.length === 0
-            ? '<div class="callout warning"><strong>Belum ada channel notifikasi aktif</strong>' +
-              'Isi kredensial WhatsApp API atau SMTP pada berkas <code>.env</code>, lalu restart server. ' +
-              'Pengiriman via WhatsApp memerlukan gateway atau layanan pihak ketiga.</div>'
-            : '<div class="row">' + enabled.map(function (c) {
-                return '<span class="badge success">' + esc(c.label) + ' aktif</span>';
-              }).join('') + '</div>') +
+        '<div class="card-body tight">' +
+          App.table([
+            { key: 'label', label: 'Kanal' },
+            { key: 'status', label: 'Status', render: function (r) {
+              if (!r.info.enabled) return '<span class="badge idle">Nonaktif</span>';
+              return r.info.problem
+                ? '<span class="badge warning">Belum lengkap</span>'
+                : '<span class="badge success">Aktif</span>';
+            } },
+            { key: 'detail', label: 'Keterangan', render: function (r) {
+              return esc(r.info.problem || (r.info.host ? r.info.host + ':' + r.info.port : r.info.gateway) || '-');
+            } },
+          ], rows, { empty: 'Kanal notifikasi tidak terbaca.' }) +
         '</div>' +
       '</div>';
     }
@@ -278,7 +285,7 @@
       App.confirm({
         title: 'Hitung ulang rekap',
         heading: 'Proses 30 hari terakhir?',
-        message: 'Seluruh rekap 30 hari terakhir akan dihitung ulang dari log mentah mesin. Log yang sudah dikoreksi manual akan ditimpa.',
+        message: 'Seluruh rekap 30 hari terakhir akan dihitung ulang dari log mentah mesin. Koreksi manual tetap dipertahankan (tidak ditimpa).',
         confirmLabel: 'Proses Sekarang',
         onConfirm: function () {
           var btn = document.getElementById('btnBackfill');

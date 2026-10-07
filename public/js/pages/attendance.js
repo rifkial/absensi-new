@@ -81,7 +81,7 @@
         deptSelect(meta_) +
         '<div class="field"><label>Status</label><select id="fStatus">' +
           '<option value="">Semua Status</option>' +
-['hadir', 'telat', 'dinas_luar', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'].map(function (s) {
+['hadir', 'telat', 'dinas_luar', 'dinas_dalam', 'izin', 'sakit', 'cuti', 'alpa', 'belum', 'hari_libur'].map(function (s) {
     return '<option value="' + s + '"' + (filters.status === s ? ' selected' : '') + '>' + esc(App.STATUS_LABELS[s] || s) + '</option>';
           }).join('') +
         '</select></div>';
@@ -197,6 +197,8 @@
     var summaryHtml = '<div class="stat-grid">' +
       stat('success', 'Hadir', counts.hadir) +
       stat('warning', 'Telat', counts.telat) +
+      stat('success', 'Dinas Luar', counts.dinas_luar) +
+      stat('success', 'Dinas Dalam', counts.dinas_dalam) +
       stat('info', 'Izin', counts.izin) +
       stat('purple', 'Sakit', counts.sakit) +
       stat('danger', 'Alpa', counts.alpa) +
@@ -255,7 +257,7 @@
   }
 
   function countByStatus(list) {
-    var out = { hadir: 0, telat: 0, izin: 0, sakit: 0, cuti: 0, alpa: 0, belum: 0, hari_libur: 0 };
+    var out = { hadir: 0, telat: 0, dinas_luar: 0, dinas_dalam: 0, izin: 0, sakit: 0, cuti: 0, alpa: 0, belum: 0, hari_libur: 0 };
     list.forEach(function (r) {
       var key = String(r.status || 'belum');
       if (out[key] === undefined) out[key] = 0;

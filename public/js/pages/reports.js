@@ -24,6 +24,8 @@
     department_id: '',
     employee_id: '',
     status: '',
+    page: 1,
+    per_page: 50,
   };
 
   /**
@@ -151,7 +153,7 @@
     if (preview) preview.addEventListener('click', loadPreview);
     if (excel) excel.addEventListener('click', function () { download('excel'); });
     if (csv) csv.addEventListener('click', function () { download('csv'); });
-    if (print) print.addEventListener('click', function () { window.print(); });
+    if (print) print.addEventListener('click', printReport);
 
     // Filter lain ikut refresh pratinjau saat diganti.
     ['rpDept', 'rpStatus', 'rpFrom', 'rpTo', 'rpMonth'].forEach(function (id) {
@@ -204,7 +206,7 @@
   var STATUS_FORMATS = ['rekap_harian'];
 
   function query(f) {
-    var q = { format: f.format };
+    var q = { format: f.format, page: state.page, per_page: state.per_page };
     if (f._usesMonth) q.month = f.month;
     else { q.from = f.from; q.to = f.to; }
     if (f.department_id) q.department_id = f.department_id;
@@ -212,9 +214,10 @@
     return q;
   }
 
-  function loadPreview() {
+  function loadPreview(resetPage) {
     var f = readFilters();
     state.format = f.format;
+    if (resetPage !== false) state.page = 1;
 
     var box = document.getElementById('repBody');
     box.innerHTML = App.loading('Menyusun laporan...');
@@ -223,12 +226,12 @@
       .then(function (res) {
         var report = res.data || {};
         var meta_ = report.meta || {};
+        state.page = meta_.page || 1;
 
         document.getElementById('repTitle').textContent = (FORMATS.find(function (x) { return x.key === f.format; }) || {}).label || 'Laporan';
         document.getElementById('repSub').textContent =
           (f._usesMonth ? 'Periode: ' + App.monthLabel(f.month) : 'Periode: ' + App.fmtDate(f.from) + ' s.d. ' + App.fmtDate(f.to)) +
-          ' | ' + App.formatNumber(meta_.total || (report.rows || []).length) + ' baris' +
-          ((report.rows || []).length > 500 ? ' (menampilkan 500 pertama)' : '');
+          ' | ' + App.formatNumber(meta_.total || (report.rows || []).length) + ' baris';
 
         try {
           paintRows(f.format, report.rows || [], meta_);
@@ -252,8 +255,9 @@
 
     var columns;
     if (format === 'rekap_kehadiran') {
+      var baseNo = ((meta_.page || 1) - 1) * (meta_.per_page || rows.length);
       columns = [
-        { key: 'no_urut', label: 'No', align: 'right', render: function (r, i) { return i + 1; } },
+        { key: 'no_urut', label: 'No', align: 'right', render: function (r, i) { return baseNo + i + 1; } },
         { key: 'employee_code', label: 'ID Karyawan', mono: true },
         { key: 'employee_name', label: 'Nama' },
         { key: 'department_name', label: 'Divisi/Departemen' },
@@ -370,10 +374,72 @@
         }).join('') + '</div></div>';
     }
 
-    box.innerHTML = summaryBar + App.table(columns, rows, { empty: 'Tidak ada data.' });
+    var pager = '';
+    if ((meta_.total_pages || 0) > 1) {
+      pager = '<div class="pagination">' +
+        '<span>' + App.formatNumber(meta_.total || 0) + ' baris | Halaman ' + (meta_.page || 1) +
+          ' dari ' + (meta_.total_pages || 1) + '</span>' +
+        '<button class="btn sm" data-pg="prev"' + ((meta_.page || 1) <= 1 ? ' disabled' : '') + '>&laquo; Sebelumnya</button>' +
+        '<button class="btn sm" data-pg="next"' + ((meta_.page || 1) >= (meta_.total_pages || 1) ? ' disabled' : '') + '>Berikutnya &raquo;</button>' +
+      '</div>';
+    }
 
-    // Simpan untuk cetak
+    box.innerHTML = summaryBar + App.table(columns, rows, { empty: 'Tidak ada data.' }) + pager;
+
+    box.querySelectorAll('button[data-pg]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        state.page = b.getAttribute('data-pg') === 'next' ? (meta_.page || 1) + 1 : (meta_.page || 1) - 1;
+        loadPreview(false);
+      });
+    });
+
     window.__reportRows = rows;
+    window.__reportColumns = columns;
+  }
+
+  function printText(value) {
+    var tmp = document.createElement('div');
+    tmp.innerHTML = value == null ? '' : String(value);
+    return tmp.textContent || tmp.innerText || '-';
+  }
+
+  function printReport() {
+    var rows = window.__reportRows || [];
+    var columns = window.__reportColumns || [];
+    if (!rows.length || !columns.length) { App.toast('Tampilkan laporan dulu sebelum mencetak.', 'error'); return; }
+    var f = readFilters();
+    var label = (FORMATS.find(function (x) { return x.key === f.format; }) || {}).label || 'Laporan';
+    var periode = f._usesMonth
+      ? 'Periode: ' + App.monthLabel(f.month)
+      : 'Periode: ' + App.fmtDate(f.from) + ' s.d. ' + App.fmtDate(f.to);
+    var w = window.open('', '_blank', 'width=1000,height=800');
+    if (!w) { App.toast('Popup diblokir browser. Izinkan popup untuk mencetak.', 'error'); return; }
+    var head = columns.map(function (c) { return '<th>' + esc(c.label) + '</th>'; }).join('');
+    var body = rows.map(function (r, i) {
+      var tds = columns.map(function (c) {
+        var raw = typeof c.render === 'function' ? c.render(r, i) : (r[c.key] == null ? '-' : r[c.key]);
+        return '<td>' + esc(printText(raw)) + '</td>';
+      }).join('');
+      return '<tr>' + tds + '</tr>';
+    }).join('');
+    w.document.write(
+      '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><title>' + esc(label) + '</title>' +
+      '<style>body{font-family:Arial,sans-serif;margin:24px;color:#111;font-size:12px}' +
+      'h2{margin:0;font-size:18px;text-align:center}h3{margin:4px 0 2px;font-size:14px;text-align:center}' +
+      '.sub{text-align:center;color:#555;margin-bottom:12px}' +
+      'table{width:100%;border-collapse:collapse}th,td{border:1px solid #999;padding:5px 7px;text-align:left}' +
+      'th{background:#eee}.num{text-align:right}' +
+      '@media print{.noprint{display:none}}</style></head><body>' +
+      '<h2>' + esc(label) + '</h2>' +
+      '<h3>Aplikasi Absensi Fingerprint</h3>' +
+      '<div class="sub">' + esc(periode) + ' | Dicetak: ' + esc(new Date().toLocaleString('id-ID')) + '</div>' +
+      '<table><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>' +
+      '<div class="noprint" style="margin-top:16px;text-align:center">' +
+      '<button onclick="window.print()">Cetak</button></div>' +
+      '</body></html>'
+    );
+    w.document.close();
+    w.focus();
   }
 
   function download(kind) {

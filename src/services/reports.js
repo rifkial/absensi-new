@@ -398,6 +398,16 @@ async function build(format, options = {}) {
   throw badRequest(`format "${format}" tidak dikenali. Pilihan: ${FORMATS.join(', ')}.`);
 }
 
+function formatDurasi(menit) {
+  var m = Number(menit || 0);
+  if (m <= 0) return '-';
+  var h = Math.floor(m / 60);
+  var r = m % 60;
+  if (h === 0) return r + ' menit';
+  if (r === 0) return h + ' jam';
+  return h + ' jam ' + r + ' menit';
+}
+
 function decorateDailyRow(row) {
   return {
     ...row,
@@ -406,7 +416,7 @@ function decorateDailyRow(row) {
     jam_masuk: formatTime(row.first_in),
     jam_keluar: formatTime(row.first_out),
     menit_terlambat: Number(row.late_minutes || 0),
-    jam_kerja: (Number(row.work_minutes || 0) / 60).toFixed(2),
+    jam_kerja: formatDurasi(row.work_minutes),
     jam_lembur: (Number(row.overtime_minutes || 0) / 60).toFixed(2),
     menit_pulang_cepat: Number(row.early_minutes || 0),
     status_label: attendanceService.STATUS_LABEL[row.status] || row.status,
@@ -463,7 +473,7 @@ const DAILY_COLUMNS = [
   { key: 'jam_masuk', header: 'Jam Masuk', width: 12 },
   { key: 'jam_keluar', header: 'Jam Keluar', width: 13 },
   { key: 'menit_terlambat', header: 'Telat (menit)', width: 14 },
-  { key: 'jam_kerja', header: 'Jam Kerja', width: 12 },
+  { key: 'jam_kerja', header: 'Durasi Kerja', width: 16 },
   { key: 'jam_lembur', header: 'Lembur (jam)', width: 13 },
   { key: 'status_label', header: 'Status', width: 16 },
   { key: 'scan_count', header: 'Jumlah Scan', width: 12 },

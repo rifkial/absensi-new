@@ -301,7 +301,7 @@ onMount: function (modalEl) {
   // ============================================================ PENGATURAN
 
   // Tab "Status Sistem" dipakai ulang oleh halaman Pengaturan (pages/settings.js).
-  window.Pages.settingsStatus = function (root) {
+  window.Pages.settingsStatus = function (root, appSettings) {
     root.innerHTML = App.loading('Memuat pengaturan...');
 
     Promise.all([
@@ -312,6 +312,11 @@ onMount: function (modalEl) {
       var push = res[0].data || {};
       var notify = res[1].data || {};
       var sync = res[2].data || {};
+      var tz = (appSettings && appSettings.timezone) || 'Asia/Jakarta';
+      var lastCycle = sync.last_cycle || sync.lastCycle || {};
+      var lastRun = sync.last_run_at || lastCycle.started_at || lastCycle.startedAt;
+      var lastDone = sync.last_finished_at || lastCycle.finished_at || lastCycle.finishedAt;
+      var totalRuns = sync.total_runs !== undefined ? sync.total_runs : sync.cycle_count;
 
       root.innerHTML =
         '<div class="grid-2">' +
@@ -336,12 +341,12 @@ onMount: function (modalEl) {
             '<div class="card-header"><div><h2 class="card-title">Sinkronisasi Otomatis</h2>' +
             '<p class="card-subtitle">Status penjadwal di server</p></div></div>' +
             '<div class="card-body">' +
-              App.table([{ key: 'label', label: 'Informasi' }, { key: 'value', label: 'Nilai' }], [
-                { label: 'Status', value: sync.running ? '<span class="badge success">Aktif</span>' : '<span class="badge idle">Tidak aktif</span>' },
+              App.table([{ key: 'label', label: 'Informasi' }, { key: 'value', label: 'Nilai', render: function (r) { return r.value; } }], [
+                { label: 'Status', value: sync.enabled ? '<span class="badge success">Aktif</span>' : '<span class="badge idle">Tidak aktif</span>' },
                 { label: 'Periode', value: sync.interval_minutes ? 'Setiap ' + sync.interval_minutes + ' menit' : '-' },
-                { label: 'Terakhir berjalan', value: sync.last_run_at ? App.fmtRelative(sync.last_run_at) : 'belum pernah' },
-                { label: 'Selesai terakhir', value: sync.last_finished_at ? App.fmtRelative(sync.last_finished_at) : '-' },
-                { label: 'Total siklus', value: App.formatNumber(sync.total_runs || 0) },
+                { label: 'Terakhir berjalan', value: lastRun ? App.fmtRelative(lastRun) : 'belum pernah' },
+                { label: 'Selesai terakhir', value: lastDone ? App.fmtRelative(lastDone) : '-' },
+                { label: 'Total siklus', value: App.formatNumber(totalRuns || 0) },
               ], { empty: 'Informasi penjadwal tidak tersedia.' }) +
               '<div class="callout success mt"><strong>Sinkronisasi berjalan di server</strong>' +
               'Tidak perlu membuka browser. Selama proses Node.js berjalan, mesin ditarik log secara otomatis. ' +
@@ -419,7 +424,7 @@ onMount: function (modalEl) {
               { label: 'Aplikasi Absensi Fingerprint', value: '1.0.0' },
               { label: 'Node.js', value: '24.x' },
               { label: 'Database', value: 'MySQL / MariaDB' },
-              { label: 'Zona waktu', value: process.env.TZ || 'Asia/Jakarta' },
+              { label: 'Zona waktu', value: esc(tz) },
             ], { empty: '-' }) +
           '</div>' +
         '</div>';
@@ -482,23 +487,25 @@ onMount: function (modalEl) {
 
   // ------------------------------------------------------------- Jejak audit
 
+  var audPage = 1;
+
   function bindAudit() {
     if (!App.can('audit:read')) return;
 
     var refresh = document.getElementById('audRefresh');
-    if (refresh) refresh.addEventListener('click', loadAudit);
+    if (refresh) refresh.addEventListener('click', function () { audPage = 1; loadAudit(); });
 
     loadAudit();
   }
 
-  /** Muat 20 jejak audit terbaru ke kartu "Jejak Audit". */
+  /** Muat jejak audit ke kartu "Jejak Audit". */
   function loadAudit() {
     var box = document.getElementById('audBox');
     if (!box || !App.can('audit:read')) return;
 
     box.innerHTML = App.loading('Memuat jejak audit...');
 
-    api.get('/audit', { per_page: 20 })
+    api.get('/audit', { per_page: 10, page: audPage })
       .then(function (res) {
         var rows = res.rows || [];
         var meta_ = res.meta || {};
@@ -535,8 +542,19 @@ onMount: function (modalEl) {
             return r.ip_address ? '<span class="mono small">' + esc(r.ip_address) + '</span>' : '<span class="faint">-</span>';
           } },
         ], rows, { empty: '-' }) +
-        '<div class="small faint" style="padding:8px 12px">Total ' +
-          App.formatNumber(meta_.total || 0) + ' jejak. Buka tab Browser di panel atas untuk memuat yang lebih banyak.</div>';
+        '<div class="pagination">' +
+          '<span>' + App.formatNumber(meta_.total || 0) + ' jejak | Halaman ' + (meta_.page || 1) +
+            ' dari ' + (meta_.total_pages || 1) + '</span>' +
+          '<button class="btn sm" data-pg="prev"' + ((meta_.page || 1) <= 1 ? ' disabled' : '') + '>&laquo; Sebelumnya</button>' +
+          '<button class="btn sm" data-pg="next"' + ((meta_.page || 1) >= (meta_.total_pages || 1) ? ' disabled' : '') + '>Berikutnya &raquo;</button>' +
+        '</div>';
+
+        box.querySelectorAll('button[data-pg]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            audPage = b.getAttribute('data-pg') === 'next' ? (meta_.page || 1) + 1 : (meta_.page || 1) - 1;
+            loadAudit();
+          });
+        });
       })
       .catch(function (err) {
         box.innerHTML = '<div class="empty-state"><div class="big">&#9888;</div>' +

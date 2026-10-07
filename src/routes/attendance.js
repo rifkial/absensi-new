@@ -69,7 +69,7 @@ router.get(
         })),
         employees: employeeStats,
         devices: deviceStats,
-        notify: notify.status(),
+        notify: await notify.status(),
         recent_logs: recentLogs.map((l) => ({
           ...l,
           log_state_label: attendance.LOG_STATE[Number(l.log_state)] || l.log_state,

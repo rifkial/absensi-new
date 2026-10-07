@@ -59,7 +59,7 @@
         else if (tab === 'holiday') paintHoliday(cached, box);
         else if (tab === 'device') paintDevice(cached, box);
         else if (tab === 'notify') paintNotify(cached, box);
-        else paintSystem(box);
+        else paintSystem(box, cached);
       })
       .catch(function (err) {
         box.innerHTML = '<div class="card"><div class="empty-state"><div class="big">&#9888;</div><div>' + esc(err.message) + '</div></div></div>';
@@ -324,9 +324,9 @@
     bindSave();
   }
 
-  function paintSystem(box) {
+  function paintSystem(box, s) {
     if (window.Pages && typeof window.Pages.settingsStatus === 'function') {
-      window.Pages.settingsStatus(box);
+      window.Pages.settingsStatus(box, s || cached);
       return;
     }
     box.innerHTML = '<div class="card"><div class="empty-state"><div class="big">&#9881;</div><div>Halaman status sistem belum siap.</div></div></div>';
