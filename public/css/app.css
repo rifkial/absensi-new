@@ -545,6 +545,14 @@ td.mono {
   opacity: 0.35;
 }
 
+#dashUpcoming .empty-state {
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
 /* ---------------------------------------------------------------- Badges */
 
 .badge {
@@ -997,6 +1005,61 @@ td.mono {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.cal-dow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 4px 0;
+}
+
+.cal-day {
+  min-height: 52px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font-size: 12px;
+  background: var(--surface);
+}
+
+.cal-day.blank {
+  border-color: transparent;
+  background: transparent;
+}
+
+.cal-day.today {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.cal-day.holiday {
+  background: var(--danger-soft);
+  border-color: #fca5a5;
+}
+
+.cal-day .num {
+  font-weight: 700;
+}
+
+.cal-day .ev {
+  margin-top: 2px;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--danger);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .row {

@@ -138,6 +138,30 @@
         '<div class="grid-2">' +
           '<div class="card">' +
             '<div class="card-header">' +
+              '<div><h2 class="card-title">Kalender</h2>' +
+              '<p class="card-subtitle" id="dashCalSub"></p></div>' +
+              '<div class="btn-group">' +
+                '<button class="btn sm" id="calPrev">&laquo;</button>' +
+                '<button class="btn sm" id="calToday">Bulan ini</button>' +
+                '<button class="btn sm" id="calNext">&raquo;</button>' +
+              '</div>' +
+            '</div>' +
+            '<div class="card-body"><div id="dashCalGrid">' + App.loading('Memuat kalender...') + '</div></div>' +
+          '</div>' +
+
+          '<div class="card">' +
+            '<div class="card-header">' +
+              '<div><h2 class="card-title">Hari Libur &amp; Event</h2>' +
+              '<p class="card-subtitle">60 hari ke depan</p></div>' +
+              (App.can('holidays:read') ? '<a class="btn sm" href="#/holidays">Kelola</a>' : '') +
+            '</div>' +
+            '<div class="card-body tight" id="dashUpcoming">' + App.loading('Memuat event...') + '</div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="grid-2">' +
+          '<div class="card">' +
+            '<div class="card-header">' +
               '<div><h2 class="card-title">Status Mesin Fingerprint</h2>' +
               '<p class="card-subtitle">' + activeDevices.length + ' perangkat aktif, ' + onlineDevices.length + ' sinkronisasi terakhir berhasil</p></div>' +
               '<a class="btn sm" href="#/devices">Kelola</a>' +
@@ -199,6 +223,9 @@
           : '') +
 
         renderNotifyCard(data.notify);
+        seedCalendar();
+        bindCalendar();
+        paintCalendar();
 
       // Notifikasi per karyawan
       var notifyBtn = document.getElementById('btnNotifyLate');
@@ -219,6 +246,121 @@
             });
         });
       }
+    }
+
+    var calMonth = App.today().slice(0, 7);
+    var calCache = {};
+    var calSeeded = false;
+
+    function seedCalendar() {
+      if (calSeeded || !data || !data.calendar) return;
+      calSeeded = true;
+      if (data.calendar.month) calMonth = data.calendar.month;
+      (data.calendar.holidays || []).forEach(function (h) {
+        var d = String(h.holiday_date || '').slice(0, 10);
+        if (!d) return;
+        calCache[d.slice(0, 7)] = calCache[d.slice(0, 7)] || [];
+        calCache[d.slice(0, 7)].push(h);
+      });
+    }
+
+    function monthKey(offset) {
+      var parts = calMonth.split('-');
+      var d = new Date(Number(parts[0]), Number(parts[1]) - 1 + offset, 1);
+      return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+
+    function bindCalendar() {
+      var prev = document.getElementById('calPrev');
+      var next = document.getElementById('calNext');
+      var todayBtn = document.getElementById('calToday');
+      if (prev) prev.addEventListener('click', function () { calMonth = monthKey(-1); paintCalendar(); });
+      if (next) next.addEventListener('click', function () { calMonth = monthKey(1); paintCalendar(); });
+      if (todayBtn) todayBtn.addEventListener('click', function () { calMonth = App.today().slice(0, 7); paintCalendar(); });
+    }
+
+    function holidayMap() {
+      var map = {};
+      var list = calCache[calMonth] || [];
+      list.forEach(function (h) {
+        var d = String(h.holiday_date || '').slice(0, 10);
+        if (d.slice(0, 7) !== calMonth) return;
+        map[d] = map[d] || [];
+        map[d].push(h);
+      });
+      return map;
+    }
+
+    function paintCalendar() {
+      var grid = document.getElementById('dashCalGrid');
+      if (!grid) return;
+      if (!calCache[calMonth] && App.can('holidays:read')) {
+        grid.innerHTML = App.loading('Memuat kalender...');
+        var p = calMonth.split('-');
+        var last = new Date(Number(p[0]), Number(p[1]), 0).getDate();
+        api.get('/holidays', { from: calMonth + '-01', to: calMonth + '-' + String(last).padStart(2, '0') })
+          .then(function (res) {
+            calCache[calMonth] = res.data || [];
+            paintCalendar();
+          })
+          .catch(function () {
+            calCache[calMonth] = [];
+            paintCalendar();
+          });
+        return;
+      }
+      var sub = document.getElementById('dashCalSub');
+      var parts = calMonth.split('-');
+      var label = App.monthLabel(calMonth);
+      if (sub) sub.textContent = label + ' — merah = libur/perayaan';
+
+      var map = holidayMap();
+      var first = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+      var lead = (first.getDay() + 6) % 7;
+      var daysInMonth = new Date(Number(parts[0]), Number(parts[1]), 0).getDate();
+      var todayStr = App.today();
+
+      var html = '<div class="cal-grid">' +
+        ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'].map(function (d) {
+          return '<div class="cal-dow">' + d + '</div>';
+        }).join('');
+
+      var i;
+      for (i = 0; i < lead; i += 1) html += '<div class="cal-day blank"></div>';
+      for (i = 1; i <= daysInMonth; i += 1) {
+        var iso = calMonth + '-' + String(i).padStart(2, '0');
+        var evs = map[iso] || [];
+        var cls = 'cal-day' + (iso === todayStr ? ' today' : '') + (evs.length > 0 ? ' holiday' : '');
+        html += '<div class="' + cls + '" title="' + esc(evs.map(function (e) { return e.name; }).join('; ') || App.fmtDate(iso)) + '">' +
+          '<div class="num">' + i + '</div>' +
+          evs.slice(0, 2).map(function (e) { return '<div class="ev">' + esc(e.name) + '</div>'; }).join('') +
+          (evs.length > 2 ? '<div class="ev faint">+' + (evs.length - 2) + ' lagi</div>' : '') +
+        '</div>';
+      }
+      html += '</div>';
+      grid.innerHTML = html;
+      paintUpcoming();
+    }
+
+    function paintUpcoming() {
+      var box = document.getElementById('dashUpcoming');
+      if (!box) return;
+      var list = ((data.calendar && data.calendar.upcoming) || []).slice(0, 8);
+      if (list.length === 0) {
+        box.innerHTML = '<div class="empty-state"><div class="big">&#127796;</div>' +
+          '<div>Belum ada hari libur/event 60 hari ke depan.</div></div>';
+        return;
+      }
+      box.innerHTML = App.table([
+        { key: 'holiday_date', label: 'Tanggal', render: function (r) {
+          return '<strong>' + esc(App.fmtDate(r.holiday_date)) + '</strong>';
+        } },
+        { key: 'name', label: 'Perayaan / Event', render: function (r) { return esc(r.name); } },
+        { key: 'kind', label: 'Jenis', render: function (r) {
+          var map = { nasional: 'Libur Nasional', cuti_bersama: 'Cuti Bersama', custom: 'Libur Tambahan' };
+          return '<span class="badge info">' + esc(map[r.kind] || r.kind) + '</span>';
+        } },
+      ], list, { empty: 'Belum ada event.' });
     }
 
     function escAttr(value) {

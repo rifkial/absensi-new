@@ -6,6 +6,7 @@ const auth = require('../middleware/auth');
 const { wrap } = require('../middleware/error');
 const { badRequest } = require('../utils/errors');
 const attendance = require('../services/attendance');
+const holidays = require('../services/holidays');
 const portal = require('../services/employeePortal');
 const audit = require('../services/audit');
 const notify = require('../services/notify');
@@ -36,6 +37,19 @@ router.get(
          FROM devices ORDER BY name`
     );
     const todayData = from === to ? summary : await attendance.summary({ from: to, to });
+    let calendar = null;
+    try {
+      const monthStart = to.slice(0, 7) + '-01';
+      const monthEnd = new Date(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 0).getDate();
+      const calTo = to.slice(0, 7) + '-' + String(monthEnd).padStart(2, '0');
+      calendar = {
+        month: to.slice(0, 7),
+        holidays: await holidays.listBetween(monthStart, calTo),
+        upcoming: await holidays.upcoming(60),
+      };
+    } catch {
+      calendar = null;
+    }
     const recentLogs = await db.queryAll(
       `SELECT l.id, l.log_time, l.log_state, l.verify_mode, e.name AS employee_name,
               e.employee_code, e.device_user_id, d.name AS device_name
@@ -69,6 +83,7 @@ router.get(
         })),
         employees: employeeStats,
         devices: deviceStats,
+        calendar,
         notify: await notify.status(),
         recent_logs: recentLogs.map((l) => ({
           ...l,

@@ -221,7 +221,7 @@
           '</div>' +
           '<nav class="sidebar-nav">' + navHtml + '</nav>' +
           '<div class="sidebar-footer">' +
-            'Versi 1.0 &middot; Node.js<br>' +
+            'Versi 1.2.0 &middot; Node.js<br>' +
             'Zona waktu: Asia/Jakarta' +
           '</div>' +
         '</aside>' +

@@ -6,17 +6,19 @@ Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 
 ## Fitur
 
-- Karyawan, departemen, jabatan, shift, jadwal
+- Karyawan, departemen, jabatan, shift, jadwal (versi UI 1.2.0 di sidebar + Status Sistem)
+- Absensi: statistik dinas luar/dalam terpisah; Dashboard: Hadir bersih, kartu Dinas sendiri, status kanal notif asli
 - Tarik log dari mesin (polling TCP 4370) + mode PUSH (ADMS/icLock) + impor CSV
 - Rekap harian/bulanan, telat, lembur, izin/sakit/cuti, dinas dalam/luar, alpa, hari libur
-- Laporan 7 format + ekspor Excel
-- Hari libur nasional (UI + sinkronisasi API)
+- Laporan 7 format + ekspor Excel + pratinjau pagination 50/halaman + cetak popup (kop + tabel saja)
+- Hari libur nasional (UI + sinkronisasi API) + Kalender & event 60 hari di Dashboard
+- Jejak audit di Pengaturan memakai pagination 10/halaman
 - Pengajuan cuti/izin/dinas + reimburse (filter rentang tanggal, impor/ekspor Excel)
 - Surat Perjalanan Dinas (nomor + transportasi, cetak) untuk dinas yang disetujui
 - Portal mandiri karyawan (`role employee`): rekap, pengajuan, check-in dinas GPS + selfie
 - Auto-sync mesin MATI default (tombol hidup/mati di menu Perangkat, tanpa restart)
 - Sync manual jalan di background (202 + polling status, UI tidak menggantung)
-- Notifikasi realtime SSE + bell (dinas/reimburse), email SMTP + WhatsApp gateway
+- Notifikasi realtime SSE + bell unread + halaman riwayat `/#/notifications` (pagination, admin & employee), email SMTP + WhatsApp gateway
 - Peta Leaflet lokal (tanpa CDN luar, tile/search via proxy server)
 - Audit log, throttle login, JWT auth
 - Frontend statis di `public/` (tanpa build, tanpa bundler)
@@ -157,7 +159,7 @@ Format (`GET /api/reports/formats`):
 - `log_mentah` — semua scan mesin
 
 Preview JSON: `GET /api/reports/preview?format=rekap_harian&from=2026-10-01&to=2026-10-06`
-Unduh Excel: `GET /api/reports/export/excel?...` (butuh `reports:export`)
+Unduh Excel: `GET /api/reports/export/excel?...` (butuh `reports:export`; kolom harian `Durasi Kerja` berisi `8 jam 30 menit`)
 
 ## API ringkas
 
@@ -168,7 +170,8 @@ GET  /health
 POST /api/auth/login
 GET  /api/auth/me, /api/auth/meta
 GET  /api/employees, /api/shifts, /api/holidays, /api/devices
-GET  /api/attendance/dashboard?days=14
+GET  /api/attendance/dashboard?days=14   # termasuk `calendar: {month, holidays, upcoming(60)}`
+GET  /api/holidays?from=&to=   # sumber data kalender per bulan
 GET  /api/devices/status
 POST /api/devices/scheduler {enabled:true|false}   # hidup/mati auto-sync tanpa restart
 POST /api/devices/:id/sync                         # 202 background + polling /devices/status
@@ -179,8 +182,9 @@ PUT  /api/employees/leaves/:id/review               # {status, review_note, forc
 PUT  /api/employees/leaves/:id/travel               # {transport, travel_letter_no} (dinas approved)
 GET  /api/employees/leaves/:id/travel-letter        # data surat siap cetak
 GET  /api/employees/history/export/excel?tab=leave&status=all&from=&to=
-GET  /api/reports/preview?format=rekap_harian&from=&to=
-GET  /api/notifications, /api/notifications/unread-count
+GET  /api/reports/preview?format=rekap_harian&from=&to=&page=1&per_page=50   # pratinjau pagination, ekspor tetap full
+GET  /api/notifications?unread=1&limit= | ?per_page=&page=   # bell = unread saja; halaman riwayat = pagination + meta
+GET  /api/notifications/unread-count
 GET  /api/notifications/stream?token=               # SSE (1 koneksi per user, lama ditutup otomatis)
 GET  /api/geo/tiles/{z}/{x}/{y}.png, /api/geo/search?q=
 GET  /api/attendance, /api/reports/preview, /api/audit, /api/me
