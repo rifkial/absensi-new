@@ -70,11 +70,18 @@ router.use(auth.requireAuth);
 router.get(
   '/',
   wrap(async (req, res) => {
-    const rows = await realtime.listForUser(req.user.id, {
+    const perPage = Number(req.query.per_page) || 0;
+    const result = await realtime.listForUser(req.user.id, {
       limit: req.query.limit,
+      page: req.query.page,
+      perPage,
       unreadOnly: req.query.unread === '1',
     });
-    res.json({ ok: true, data: rows, unread: await realtime.unreadCount(req.user.id) });
+    if (perPage > 0) {
+      res.json({ ok: true, data: result.rows, meta: result.meta, unread: await realtime.unreadCount(req.user.id) });
+      return;
+    }
+    res.json({ ok: true, data: result, unread: await realtime.unreadCount(req.user.id) });
   })
 );
 

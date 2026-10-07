@@ -23,6 +23,7 @@
     users: { title: 'Pengguna', icon: '&#128100;', module: 'users', perm: 'users:manage' },
     settings: { title: 'Pengaturan', icon: '&#9881;', module: 'settings', perm: 'settings:read' },
     employee: { title: 'Portal Saya', icon: '&#128188;', module: 'employee' },
+    notifications: { title: 'Notifikasi', icon: '&#128276;', module: 'notifications' },
   };
 
   // Halaman khusus karyawan. Saat akun employee masuk, sidebar hanya menampilkan
@@ -30,7 +31,10 @@
   var EMPLOYEE_NAV = [
     {
       label: 'Karyawan',
-      items: [{ route: 'employee', label: 'Portal Saya' }],
+      items: [
+        { route: 'employee', label: 'Portal Saya' },
+        { route: 'notifications', label: 'Notifikasi' },
+      ],
     },
   ];
 
@@ -42,6 +46,7 @@
         { route: 'attendance', label: 'Absensi' },
         { route: 'pengajuan', label: 'Pengajuan' },
         { route: 'reports', label: 'Laporan' },
+        { route: 'notifications', label: 'Notifikasi' },
       ],
     },
     {
@@ -172,7 +177,7 @@
     if (!PAGES[parts[0]]) return defaultRoute();
     // Akun employee dipaksa ke portalnya, jadi halaman admin tidak bisa dibuka
     // hanya dengan mengetik hash.
-    if (isEmployeeAccount() && parts[0] !== 'employee') return 'employee';
+    if (isEmployeeAccount() && parts[0] !== 'employee' && parts[0] !== 'notifications') return 'employee';
     return parts[0];
   }
 
@@ -283,26 +288,33 @@
         .catch(function () {});
     }
 
+    function notifItemHtml(r) {
+      return '<div class="notif-item unread" data-notif="' + r.id + '">' +
+        '<div class="notif-item-title">' + esc(r.title) + '</div>' +
+        (r.body ? '<div class="notif-item-body">' + esc(r.body) + '</div>' : '') +
+        '<div class="notif-item-time">' + esc(App.fmtDateTime(r.created_at)) + '</div>' +
+      '</div>';
+    }
+
     bell.addEventListener('click', function () {
-      api.get('/notifications', { limit: 30 })
+      api.get('/notifications', { limit: 30, unread: '1' })
         .then(function (res) {
           var rows = res.data || [];
           setBadge(Number(res.unread) || 0);
-          var body = rows.length === 0
-            ? '<div class="empty-state">Belum ada notifikasi.</div>'
-            : rows.map(function (r) {
-              return '<div class="notif-item' + (Number(r.is_read) ? '' : ' unread') + '" data-notif="' + r.id + '">' +
-                '<div class="notif-item-title">' + esc(r.title) + '</div>' +
-                (r.body ? '<div class="notif-item-body">' + esc(r.body) + '</div>' : '') +
-                '<div class="notif-item-time">' + esc(App.fmtDateTime(r.created_at)) + '</div>' +
-              '</div>';
-            }).join('');
+          var foot = '<div class="row" style="margin-top:8px;gap:8px;justify-content:space-between">' +
+            '<a class="btn sm" href="#/notifications" data-close-link>Notifikasi selengkapnya</a>' +
+            (rows.length > 0 ? '<button type="button" class="btn sm" id="btnNotifReadAll">Tandai semua dibaca</button>' : '') +
+          '</div>';
+          var body = (rows.length === 0
+            ? '<div class="empty-state">Tidak ada notifikasi baru.</div>'
+            : rows.map(notifItemHtml).join('')) + foot;
           App.modal({
             title: 'Notifikasi',
-            bodyHtml: body +
-              (rows.length > 0 ? '<button type="button" class="btn sm" id="btnNotifReadAll">Tandai semua dibaca</button>' : ''),
+            bodyHtml: body,
             actions: [{ label: 'Tutup' }],
             onMount: function (el) {
+              var link = el.querySelector('[data-close-link]');
+              if (link) link.addEventListener('click', function () { el.closeModal(); });
               var all = el.querySelector('#btnNotifReadAll');
               if (all) {
                 all.addEventListener('click', function () {
@@ -316,8 +328,9 @@
                 item.addEventListener('click', function () {
                   api.post('/notifications/read/' + item.getAttribute('data-notif'), {})
                     .then(function () {
-                      item.classList.remove('unread');
+                      if (item.parentNode) item.parentNode.removeChild(item);
                       refreshBadge();
+                      if (el.querySelectorAll('[data-notif]').length === 0) el.closeModal();
                     }).catch(function () {});
                 });
               });
@@ -531,7 +544,7 @@
     var route = currentRoute();
     var page = PAGES[route] || PAGES.dashboard;
 
-    if (isEmployeeAccount() && route !== 'employee') {
+    if (isEmployeeAccount() && route !== 'employee' && route !== 'notifications') {
       window.location.hash = '#/employee';
       return;
     }

@@ -189,14 +189,27 @@ async function onReimburseReviewed(row, reviewerName, decision) {
   });
 }
 
-async function listForUser(userId, { limit = 30, unreadOnly = false } = {}) {
-  const max = Math.min(100, Math.max(1, Number(limit) || 30));
+async function listForUser(userId, { limit = 30, page = 1, perPage = 0, unreadOnly = false } = {}) {
   const where = unreadOnly ? 'user_id = ? AND is_read = 0' : 'user_id = ?';
-  return db.queryAll(
+  const total = Number(await db.queryScalar(`SELECT COUNT(*) FROM notifications WHERE ${where}`, [userId]) || 0);
+  if (perPage > 0) {
+    const pp = Math.min(100, Math.max(1, Number(perPage) || Number(limit) || 30));
+    const totalPages = Math.max(1, Math.ceil(total / pp));
+    const pg = Math.min(Math.max(1, Number(page) || 1), totalPages);
+    const rows = await db.queryAll(
+      `SELECT id, kind, title, body, entity, entity_id, is_read, created_at
+         FROM notifications WHERE ${where} ORDER BY id DESC LIMIT ${pp} OFFSET ${(pg - 1) * pp}`,
+      [userId]
+    );
+    return { rows, meta: { total, page: pg, per_page: pp, total_pages: totalPages } };
+  }
+  const max = Math.min(100, Math.max(1, Number(limit) || 30));
+  const rows = await db.queryAll(
     `SELECT id, kind, title, body, entity, entity_id, is_read, created_at
        FROM notifications WHERE ${where} ORDER BY id DESC LIMIT ${max}`,
     [userId]
   );
+  return rows;
 }
 
 async function unreadCount(userId) {
