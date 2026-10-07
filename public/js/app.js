@@ -17,6 +17,7 @@
     pengajuan: { title: 'Pengajuan', icon: '&#128203;', module: 'pengajuan' },
     devices: { title: 'Perangkat', icon: '&#128421;', module: 'devices' },
     employees: { title: 'Karyawan', icon: '&#128101;', module: 'employees' },
+    master: { title: 'Unit Kerja & Jabatan', icon: '&#127970;', module: 'master', perm: 'master:read' },
     shifts: { title: 'Shift & Jadwal', icon: '&#9200;', module: 'shifts' },
     holidays: { title: 'Hari Libur', icon: '&#127796;', module: 'holidays', perm: 'holidays:read' },
     reports: { title: 'Laporan', icon: '&#128202;', module: 'reports' },
@@ -53,6 +54,7 @@
       label: 'Data Master',
       items: [
         { route: 'employees', label: 'Karyawan' },
+        { route: 'master', label: 'Unit Kerja & Jabatan', perm: 'master:read' },
         { route: 'shifts', label: 'Shift & Jadwal' },
         { route: 'holidays', label: 'Hari Libur', perm: 'holidays:read' },
         { route: 'devices', label: 'Mesin Fingerprint' },

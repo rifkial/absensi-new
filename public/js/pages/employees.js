@@ -62,6 +62,10 @@
     bind();
     loadStats();
     load();
+    // Data master (unit kerja, jabatan, shift) dimuat ulang setiap kali halaman
+    // dibuka supaya dropdown di form karyawan selalu terisi dari server, bukan
+    // dari cache yang mungkin sudah basi.
+    reloadMeta();
   };
 
   function fillMeta() {
@@ -247,10 +251,35 @@
 
   // ---------------------------------------------------------------- Form
 
+  /**
+   * Pastikan data master (unit kerja, jabatan, shift) sudah terisi sebelum
+   * form dibangun. Meta dimuat ulang dari server setiap kali halaman dibuka
+   * supaya dropdown selalu mengambil data terbaru, bukan cache yang basi.
+   */
+  function ensureMeta() {
+    var meta_ = App.state.meta;
+    if (meta_ && (meta_.departments || []).length > 0 && (meta_.positions || []).length > 0) {
+      return Promise.resolve(meta_);
+    }
+    return api.get('/auth/meta').then(function (res) {
+      App.state.meta = res.data || { departments: [], positions: [], shifts: [] };
+      return App.state.meta;
+    }).catch(function () {
+      return { departments: [], positions: [], shifts: [] };
+    });
+  }
+
   function openForm(row) {
     var isEdit = Boolean(row);
-    var meta_ = App.state.meta || { departments: [], positions: [], shifts: [] };
 
+    // Tunggu data master siap sebelum membangun form supaya dropdown
+    // unit kerja & jabatan terisi dari server.
+    ensureMeta().then(function (meta_) {
+      buildForm(row, isEdit, meta_);
+    });
+  }
+
+  function buildForm(row, isEdit, meta_) {
     var body =
       '<div class="form-grid">' +
         field('employee_code', 'Kode Karyawan', isEdit ? row.employee_code : '', true,

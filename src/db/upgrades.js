@@ -250,6 +250,10 @@ async function auditShiftWorkDays(conn) {
 
 async function upgradeNotifications(conn) {
   if (await tableExists(conn, 'notifications')) return;
+  // Tabel ini hanya upgraded, bukan dibuat di sini: pada database kosong
+  // app_users belum ada (schema.sql baru dijalankan setelah upgrades), jadi
+  // FK ke app_users akan gagal dengan errno 150 dan membatalkan migrate.
+  if (!(await tableExists(conn, 'app_users'))) return;
   await conn.query(
     `CREATE TABLE \`notifications\` (
        \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

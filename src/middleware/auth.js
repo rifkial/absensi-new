@@ -20,6 +20,10 @@ const PERMISSIONS = {
   'employees:delete': ['admin'],
   'shifts:read': ['admin', 'hr', 'operator', 'viewer'],
   'shifts:write': ['admin', 'hr'],
+  // Data master (unit kerja & jabatan) dipakai sebagai pilihan dropdown di form
+  // karyawan dan filter laporan, jadi role read-only boleh melihat daftarnya.
+  'master:read': ['admin', 'hr', 'operator', 'viewer'],
+  'master:write': ['admin', 'hr'],
   'holidays:read': ['admin', 'hr', 'operator', 'viewer'],
   // Menambah / mengubah hari libur memengaruhi rekap seluruh karyawan.
   'holidays:write': ['admin', 'hr'],

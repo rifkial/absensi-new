@@ -7,6 +7,7 @@ Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 ## Fitur
 
 - Karyawan, departemen, jabatan, shift, jadwal (versi UI 1.2.0 di sidebar + Status Sistem)
+- Menu "Unit Kerja & Jabatan": data master divisi/departemen + jabatan (CRUD, kode unik)
 - Absensi: statistik dinas luar/dalam terpisah; Dashboard: Hadir bersih, kartu Dinas sendiri, status kanal notif asli
 - Tarik log dari mesin (polling TCP 4370) + mode PUSH (ADMS/icLock) + impor CSV
 - Rekap harian/bulanan, telat, lembur, izin/sakit/cuti, dinas dalam/luar, alpa, hari libur
@@ -36,7 +37,7 @@ src/server.js        # entry: 2 listener (web 3000 + PUSH 3001) + scheduler sync
 src/app.js           # Express app, REST API, static frontend, proxy geo (tile/search)
 src/config.js        # baca .env
 src/db/              # pool, migrate, seed, upgrades
-src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim), backup (admin)
+src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim), master (unit kerja & jabatan), backup (admin)
 src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels, whatsappSelf (QR + antrean), backup (dump .sql)
 src/devices/         # adapter: zkteco-tcp, pushhttp, csv
 src/middleware/      # auth (RBAC + cache user 30s), error
@@ -119,6 +120,7 @@ Salin `.env.example` ke `.env`. Kunci penting:
 Role: `admin`, `hr`, `operator`, `viewer`, `employee`.
 
 - `employees:write`, `shifts:write`, `holidays:write` = admin, hr
+- `master:read` (lihat daftar unit kerja/jabatan) = semua role login; `master:write` (tambah/ubah/hapus) = admin, hr
 - `devices:*`, `attendance:write` = admin, hr, operator
 - `reports:read/export`, `attendance:read` = semua role login
 - `settings`, `notify:send`, `audit:read`, `users:manage` = admin, hr
@@ -188,6 +190,10 @@ GET  /health
 POST /api/auth/login
 GET  /api/auth/me, /api/auth/meta
 GET  /api/employees, /api/shifts, /api/holidays, /api/devices
+GET  /api/master/departments, /api/master/positions   # data master untuk dropdown form karyawan
+POST /api/master/departments | /api/master/positions   # {code, name} (butuh master:write)
+PUT  /api/master/departments/:id | /api/master/positions/:id   # {name} saja, kode tidak bisa diubah
+DELETE /api/master/departments/:id | /api/master/positions/:id # ditolak (409) bila masih dipakai karyawan
 GET  /api/attendance/dashboard?days=14   # termasuk `calendar: {month, holidays, upcoming(60)}`
 GET  /api/holidays?from=&to=   # sumber data kalender per bulan
 GET  /api/devices/status
@@ -216,6 +222,37 @@ GET  /api/notifications/stream?token=               # SSE (1 koneksi per user, l
 GET  /api/geo/tiles/{z}/{x}/{y}.png, /api/geo/search?q=
 GET  /api/attendance, /api/reports/preview, /api/audit, /api/me
 ```
+
+## Data Master: Unit Kerja & Jabatan
+
+Menu **Unit Kerja & Jabatan** (sidebar > Data Master) mengelola dua tabel referensi:
+
+- **Unit Kerja** (divisi/departemen) — dipakai sebagai dropdown "Unit Kerja" di form karyawan, filter laporan/absensi, dan jadwal massal.
+- **Jabatan** — dipakai sebagai dropdown "Jabatan" di form karyawan.
+
+Aturan:
+- **Kode unik & tidak bisa diubah** setelah dibuat (identitas historis). Hanya nama yang bisa diubah lewat tombol Ubah.
+- **Hapus ditolak (409)** bila masih dipakai karyawan — kosongkan dulu di data karyawan terkait.
+- Permission: `master:read` (semua role login) untuk melihat daftar, `master:write` (admin, hr) untuk tambah/ubah/hapus.
+- Perubahan tercatat di audit log (`departments.create/update/delete`, `positions.*`).
+
+Form karyawan membaca daftar ini dari `/api/auth/meta` dan **memuat ulang setiap kali halaman dibuka**, jadi dropdown selalu mengambil data terbaru dari server tanpa perlu logout.
+
+## Seeder Data Dummy
+
+| Perintah | Fungsi |
+|---|---|
+| `npm run seed` | Admin + 5 karyawan demo + shift/jadwal contoh (idempoten) |
+| `node tools/seed-oktober.js` | Data dummy kehadiran 1–7 Oktober 2026: scan mentah mengikuti shift masing-masing karyawan (PAGI/SIANG/MALAM/FLEK), variasi telat/lembur/alpa, pengajuan izin/sakit/cuti/dinas, lalu rekap dihitung ulang. Idempoten — baris lama di periode yang sama dibersihkan dulu. |
+
+Catatan seeder Oktober:
+- Shift malam (23:00–07:00) ditulis sebagai check-in hari ini + check-out besok pagi. Karena `services/attendance.getLogsFor` menarik log pulang ke tanggal berikutnya, dua shift malam berurutan tidak bisa dipisahkan — seeder otomatis menjadwalkan **libur** pada hari setelah shift malam.
+- Log di masa depan (mis. pulang shift malam hari ini) tidak ditulis.
+- `tools/seed-dummy.js` (lama) masih ada dan tetap menghapus seluruh data absensi + memaksa jadwal global.
+
+## Catatan Migrasi
+
+`npm run migrate` **gagal di database kosong** pada versi sebelumnya: `src/db/upgrades.js` membuat tabel `notifications` dengan FK ke `app_users` sebelum `schema.sql` dijalankan, sehingga `app_users` belum ada dan MariaDB menolak dengan errno 150. Sudah diperbaiki — `upgradeNotifications` kini dilewati bila `app_users` belum ada (tabel dibuat oleh `schema.sql`).
 
 Daftar lengkap: lihat `src/routes/*.js`.
 
