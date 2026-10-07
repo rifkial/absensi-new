@@ -36,6 +36,12 @@ function createApp() {
   app.disable('x-powered-by');
   // Machines and proxies sometimes send X-Forwarded-*; needed for correct client IP on PUSH.
   app.set('trust proxy', true);
+  // API JSON jangan kena ETag/304: body kosong bikin dropdown kosong diam-diam.
+  app.set('etag', false);
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
 
   // Keamanan dasar. CSP sengaja longgar agar Chart.js dari CDN & font tetap jalan.
   app.use((req, res, next) => {

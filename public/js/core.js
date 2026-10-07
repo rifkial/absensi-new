@@ -364,6 +364,7 @@ belum: 'Belum Absen',
         method: method,
         headers: headers,
         credentials: 'same-origin',
+        cache: 'no-store',
       };
 
       if (opts.body !== undefined) {

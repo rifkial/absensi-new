@@ -257,15 +257,13 @@
    * supaya dropdown selalu mengambil data terbaru, bukan cache yang basi.
    */
   function ensureMeta() {
-    var meta_ = App.state.meta;
-    if (meta_ && (meta_.departments || []).length > 0 && (meta_.positions || []).length > 0) {
-      return Promise.resolve(meta_);
-    }
+    // Selalu ambil baru dari server: murah, dan menghindari cache basi yang
+    // bikin dropdown Unit Kerja / Jabatan / Shift kosong diam-diam.
     return api.get('/auth/meta').then(function (res) {
       App.state.meta = res.data || { departments: [], positions: [], shifts: [] };
       return App.state.meta;
-    }).catch(function () {
-      return { departments: [], positions: [], shifts: [] };
+    }).catch(function (err) {
+      return { departments: [], positions: [], shifts: [], _error: err && err.message };
     });
   }
 
@@ -280,7 +278,17 @@
   }
 
   function buildForm(row, isEdit, meta_) {
+    var metaEmpty = (meta_.departments || []).length === 0 &&
+      (meta_.positions || []).length === 0 &&
+      (meta_.shifts || []).length === 0;
     var body =
+      (meta_._error
+        ? '<div class="callout warning">Data master gagal dimuat: ' + esc(meta_._error) +
+          '. Dropdown Unit Kerja / Jabatan / Shift kosong. Tutup lalu coba lagi.</div>'
+        : metaEmpty
+          ? '<div class="callout warning">Data master (Unit Kerja / Jabatan / Shift) masih kosong. ' +
+            'Isi dulu lewat menu terkait, atau tutup lalu buka lagi.</div>'
+          : '') +
       '<div class="form-grid">' +
         field('employee_code', 'Kode Karyawan', isEdit ? row.employee_code : '', true,
           'Kode unik internal, mis. 001 atau NIP.') +
@@ -290,11 +298,11 @@
         selectField('gender', 'Jenis Kelamin', isEdit ? row.gender || '' : '',
           [['', '-'], ['L', 'Laki-laki'], ['P', 'Perempuan']]) +
         selectField('department_id', 'Unit Kerja', isEdit ? row.department_id || '' : '',
-          [['', '- (kosong)'].concat((meta_.departments || []).map(function (d) { return [d.id, d.name]; }))]) +
+          [['', '- (kosong)']].concat((meta_.departments || []).map(function (d) { return [d.id, d.name]; }))) +
         selectField('position_id', 'Jabatan', isEdit ? row.position_id || '' : '',
-          [['', '- (kosong)'].concat((meta_.positions || []).map(function (p) { return [p.id, p.name]; }))]) +
+          [['', '- (kosong)']].concat((meta_.positions || []).map(function (p) { return [p.id, p.name]; }))) +
         selectField('shift_id', 'Shift Default', isEdit ? row.shift_id || '' : '',
-          [['', '- (kosong)'].concat((meta_.shifts || []).map(function (s) { return [s.id, s.code + ' - ' + s.name]; }))]) +
+          [['', '- (kosong)']].concat((meta_.shifts || []).map(function (s) { return [s.id, s.code + ' - ' + s.name]; }))) +
         field('phone', 'Telepon / WhatsApp', isEdit ? row.phone || '' : '', false, 'Dipakai untuk notifikasi WhatsApp.') +
         field('email', 'Email', isEdit ? row.email || '' : '', false, 'Dipakai untuk notifikasi email.') +
         field('hire_date', 'Tanggal Masuk', isEdit ? (row.hire_date || '').slice(0, 10) : '', false, 'Format YYYY-MM-DD.') +
