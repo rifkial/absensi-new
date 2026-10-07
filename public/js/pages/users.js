@@ -421,7 +421,7 @@ onMount: function (modalEl) {
           '<div class="card-header"><div><h2 class="card-title">Tentang Aplikasi</h2></div></div>' +
           '<div class="card-body">' +
             App.table([{ key: 'label', label: 'Komponen' }, { key: 'value', label: 'Versi' }], [
-              { label: 'Aplikasi Absensi Fingerprint', value: '1.0.0' },
+              { label: 'Aplikasi Absensi Fingerprint', value: '1.2.0' },
               { label: 'Node.js', value: '24.x' },
               { label: 'Database', value: 'MySQL / MariaDB' },
               { label: 'Zona waktu', value: esc(tz) },
