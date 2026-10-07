@@ -23,6 +23,7 @@
             '<button class="btn ' + (tab === 'device' ? 'primary' : '') + '" data-tab="device">Perangkat &amp; Sinkron</button>' +
             '<button class="btn ' + (tab === 'notify' ? 'primary' : '') + '" data-tab="notify">Notifikasi</button>' +
             '<button class="btn ' + (tab === 'system' ? 'primary' : '') + '" data-tab="system">Status Sistem</button>' +
+            '<button class="btn ' + (tab === 'backup' ? 'primary' : '') + '" data-tab="backup">Backup</button>' +
           '</div>' +
           '<div class="btn-group">' +
             '<button class="btn" id="setReload">&#8635; Muat Ulang</button>' +
@@ -59,6 +60,7 @@
         else if (tab === 'holiday') paintHoliday(cached, box);
         else if (tab === 'device') paintDevice(cached, box);
         else if (tab === 'notify') paintNotify(cached, box);
+        else if (tab === 'backup') paintBackup(box);
         else paintSystem(box, cached);
       })
       .catch(function (err) {
@@ -541,6 +543,147 @@
       return;
     }
     box.innerHTML = '<div class="card"><div class="empty-state"><div class="big">&#9881;</div><div>Halaman status sistem belum siap.</div></div></div>';
+  }
+
+  function paintBackup(box) {
+    box.innerHTML =
+      '<div class="card">' +
+        '<div class="card-header"><div><h2 class="card-title">Backup &amp; Restore Database</h2>' +
+        '<p class="card-subtitle">Khusus admin. File tersimpan di server + bisa diunduh.</p></div>' +
+        '<div class="btn-group">' +
+          '<button class="btn primary" id="bkNow">Buat Backup Sekarang</button>' +
+          '<button class="btn" id="bkReload">&#8635; Muat Ulang</button>' +
+        '</div></div>' +
+        '<div class="card-body">' +
+          '<div class="callout warning"><strong>Restore menimpa seluruh data.</strong> ' +
+          'Sistem otomatis buat backup pra-restore + matikan sync selama proses. ' +
+          'Untuk restore wajib ketik persis nama database sebagai konfirmasi.</div>' +
+          '<div class="form-grid">' +
+            '<div class="field"><label>Upload file .sql ke server</label><input type="file" id="bkFile" accept=".sql"></div>' +
+            '<div class="field" style="align-self:end"><label>&nbsp;</label><button class="btn" id="bkUpload">Upload</button></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card-body tight" id="bkBody">' + App.loading('Memuat daftar backup...') + '</div>' +
+      '</div>';
+    document.getElementById('bkReload').addEventListener('click', loadBackup);
+    document.getElementById('bkNow').addEventListener('click', function () {
+      var btn = this;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Membuat backup...';
+      api.post('/backup', {})
+        .then(function () { App.toast('Backup selesai dan terunduh otomatis.', 'success'); loadBackup(); })
+        .catch(function (err) { App.toast(err.message, 'error'); })
+        .then(function () { btn.disabled = false; btn.textContent = 'Buat Backup Sekarang'; });
+    });
+    document.getElementById('bkUpload').addEventListener('click', function () {
+      var file = document.getElementById('bkFile').files[0];
+      if (!file) { App.toast('Pilih file .sql dulu.', 'error'); return; }
+      var form = new FormData();
+      form.append('file', file);
+      api.upload('/backup/upload', form)
+        .then(function () { App.toast('File terupload ke server.', 'success'); loadBackup(); })
+        .catch(function (err) { App.toast(err.message, 'error'); });
+    });
+    loadBackup();
+  }
+
+  function loadBackup() {
+    var box = document.getElementById('bkBody');
+    if (!box) return;
+    box.innerHTML = App.loading('Memuat daftar backup...');
+    api.get('/backup')
+      .then(function (res) {
+        var d = res.data || {};
+        var files = d.files || [];
+        box.innerHTML = App.table([
+          { key: 'file', label: 'File' },
+          { key: 'size', label: 'Ukuran', align: 'right', render: function (r) { return App.fmtBytes(r.size); } },
+          { key: 'created_at', label: 'Dibuat', render: function (r) { return esc(App.fmtDateTime(r.created_at)); } },
+          { key: 'aksi', label: '', width: '260px', render: function (r) {
+            var protected_ = String(r.name || '').indexOf('pre-restore-') === 0;
+            return '<div class="btn-group">' +
+              '<button class="btn sm" data-bk="download" data-name="' + esc(r.name) + '">Unduh</button>' +
+              '<button class="btn sm primary" data-bk="restore" data-name="' + esc(r.name) + '">Restore</button>' +
+              (protected_ ? '' : '<button class="btn sm danger" data-bk="delete" data-name="' + esc(r.name) + '">Hapus</button>') +
+            '</div>';
+          } },
+        ], files, { empty: 'Belum ada backup. Klik "Buat Backup Sekarang".', emptyIcon: '&#128193;' }) +
+        '<div class="small faint" style="padding:8px 12px">Database: ' + esc(d.database || '-') +
+          ' | Backup pra-restore dilindungi dari hapus UI.</div>';
+        box.querySelectorAll('[data-bk]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            var name = b.getAttribute('data-name');
+            var act = b.getAttribute('data-bk');
+            if (act === 'download') downloadBackup(name);
+            else if (act === 'delete') deleteBackup(name);
+            else if (act === 'restore') restoreBackup(name);
+          });
+        });
+      })
+      .catch(function (err) {
+        box.innerHTML = '<div class="empty-state"><div class="big">&#9888;</div><div>' +
+          esc(err.status === 403 ? 'Halaman Backup khusus role admin.' : err.message) + '</div></div>';
+      });
+  }
+
+  function downloadBackup(name) {
+    api.download('/backup/download/' + encodeURIComponent(name))
+      .then(function (res) {
+        var url = URL.createObjectURL(res.blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = res.filename || (name + '.sql');
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+      })
+      .catch(function (err) { App.toast('Gagal mengunduh: ' + err.message, 'error'); });
+  }
+
+  function deleteBackup(name) {
+    App.confirm({
+      title: 'Hapus file backup',
+      heading: 'Hapus ' + name + '.sql?',
+      message: 'File di server ikut terhapus. Data database tidak berubah.',
+      danger: true,
+      confirmLabel: 'Ya, Hapus',
+      onConfirm: function () {
+        api.del('/backup/' + encodeURIComponent(name))
+          .then(function () { App.toast('File backup dihapus.', 'success'); loadBackup(); })
+          .catch(function (err) { App.toast(err.message, 'error'); });
+      },
+    });
+  }
+
+  function restoreBackup(name) {
+    App.modal({
+      title: 'Restore database',
+      bodyHtml:
+        '<div class="callout danger"><strong>Restore menimpa seluruh data dari ' + esc(name) + '.sql.</strong> ' +
+        'Backup pra-restore otomatis dibuat. Sync dimatikan selama proses.</div>' +
+        '<div class="field"><label>Ketik nama database untuk konfirmasi <span class="req">*</span></label>' +
+        '<input type="text" id="bkConfirm" placeholder="nama database" autocomplete="off"></div>',
+      actions: [
+        { label: 'Batal' },
+        { label: 'Restore Sekarang', className: 'danger', value: 'go' },
+      ],
+      onAction: function (value, el) {
+        if (value !== 'go') return true;
+        var confirm = el.querySelector('#bkConfirm').value.trim();
+        if (!confirm) { App.toast('Ketik nama database dulu.', 'error'); return false; }
+        el.closeModal();
+        App.toast('Restore berjalan, jangan tutup halaman...', 'info');
+        api.post('/backup/restore', { name: name, confirm: confirm })
+          .then(function (res) {
+            var d = res.data || {};
+            App.toast('Restore selesai: ' + d.executed + ' statement. Pra-restore: ' + (d.preBackup || '-'), 'success');
+            loadBackup();
+          })
+          .catch(function (err) { App.toast(err.message, 'error'); });
+        return true;
+      },
+    });
   }
 
   function bindSave() {

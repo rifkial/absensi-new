@@ -21,6 +21,7 @@ Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 - Notifikasi realtime SSE + bell unread + halaman riwayat `/#/notifications` (pagination, admin & employee), email SMTP + WhatsApp nomor sendiri (scan QR, antrean anti-banned FIFO + jeda acak + batas/menit/hari) / gateway
 - WhatsApp broadcast multi-nomor (koma) + tombol pilih nomor dari data karyawan (langsung tersimpan)
 - Peta Leaflet lokal (tanpa CDN luar, tile/search via proxy server)
+- Backup & restore database khusus admin (tab Pengaturan > Backup, dump .sql JS murni tanpa mysqldump, retensi `BACKUP_KEEP`)
 - Audit log, throttle login, JWT auth
 - Frontend statis di `public/` (tanpa build, tanpa bundler)
 
@@ -35,15 +36,15 @@ src/server.js        # entry: 2 listener (web 3000 + PUSH 3001) + scheduler sync
 src/app.js           # Express app, REST API, static frontend, proxy geo (tile/search)
 src/config.js        # baca .env
 src/db/              # pool, migrate, seed, upgrades
-src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim)
-src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels, whatsappSelf (QR + antrean)
+src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim), backup (admin)
+src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels, whatsappSelf (QR + antrean), backup (dump .sql)
 src/devices/         # adapter: zkteco-tcp, pushhttp, csv
 src/middleware/      # auth (RBAC + cache user 30s), error
 db/schema.sql        # skema idempoten
 public/              # UI statis (index.html, css/, js/core+app+pages/, vendor/leaflet)
 public/vendor/leaflet/ # Leaflet lokal (tanpa CDN luar)
 tools/               # probe, scan, sync-once, cek-*
-test/                # node:test (125 tes: shifts, attendance, travelLetter, realtime, dutyRange, whatsappThrottle, ...)
+test/                # node:test (127 tes: shifts, attendance, travelLetter, realtime, dutyRange, whatsappThrottle, backup, ...)
 ```
 
 ## Syarat
@@ -95,6 +96,7 @@ Salin `.env.example` ke `.env`. Kunci penting:
 | `WHATSAPP_PROVIDER` | `self` (nomor sendiri, scan QR) atau `gateway` (Fonnte/Wablas/custom), default `gateway` |
 | `WHATSAPP_*` | gateway WA (aktif bila `WHATSAPP_ENABLED=true`); `WHATSAPP_SELF_SESSION` sesi QR, `WHATSAPP_SELF_AUTOSTART` sambung otomatis, `WHATSAPP_SELF_MIN/MAX_DELAY_MS` + `WHATSAPP_SELF_PER_MINUTE` + `WHATSAPP_SELF_DAILY_LIMIT` anti-banned |
 | `WHATSAPP_TARGET` | nomor TUJUAN (bukan pengirim), boleh banyak koma untuk broadcast, mis. `62812xxxxxxx, 62813xxxxxxx` |
+| `BACKUP_KEEP` | jumlah file backup terbaru di `storage/backups` (default `10`) |
 | `BACKFILL_DAYS` | backfill rekap saat generate |
 
 ## Script
@@ -109,7 +111,7 @@ Salin `.env.example` ke `.env`. Kunci penting:
 | `npm run sync` | satu siklus sync lalu keluar (`--force`, `--days N`, `--device ID`) |
 | `npm run probe -- <ip> [port] [pass]` | tes koneksi ke satu mesin |
 | `npm run scan -- [prefix]` | pindai subnet cari mesin (contoh `192.168.1`) |
-| `npm test` / `npm run build` | `node --test test/**/*.test.js` (125 tes) |
+| `npm test` / `npm run build` | `node --test test/**/*.test.js` (127 tes) |
 | `npm run lint` | eslint (butuh `eslint.config.js`, lihat migrasi ESLint v9) |
 
 ## Peran & izin
@@ -120,6 +122,7 @@ Role: `admin`, `hr`, `operator`, `viewer`, `employee`.
 - `devices:*`, `attendance:write` = admin, hr, operator
 - `reports:read/export`, `attendance:read` = semua role login
 - `settings`, `notify:send`, `audit:read`, `users:manage` = admin, hr
+- `backup:manage` = admin saja (tab Pengaturan > Backup)
 - `employee` = hanya data sendiri via `/api/me` + portal mandiri
 
 ## Mesin fingerprint
@@ -141,6 +144,12 @@ npm run scan -- 192.168.1
 ```
 
 Untuk mode PUSH, isi IP server + `PUSH_PORT` di menu ADMS mesin. Bila `PUSH_AUTH_TOKEN` diisi, mesin wajib kirim token sama.
+
+## Backup & restore database (khusus admin)
+
+- Buka Pengaturan > Backup sebagai `admin`. Buat backup = file `.sql` tersimpan di `storage/backups` (retensi `BACKUP_KEEP`, default 10) — tanpa butuh `mysqldump`.
+- Restore wajib ketik persis nama database (`DB_NAME`). Sistem otomatis: backup pra-restore (`pre-restore-*`, dilindungi dari hapus UI), kunci 1 proses, matikan scheduler sync selama restore, whitelist tabel + TRUNCATE idempoten per tabel.
+- Bisa restore dari file server atau upload `.sql` langsung. Semua aksi tercatat di audit (`backup.create/upload/restore/delete`).
 
 ## WhatsApp nomor sendiri (scan QR)
 
@@ -197,6 +206,12 @@ GET  /api/notifications/unread-count
 GET  /api/whatsapp/self/status                      # sesi WA self + policy antrean (butuh notify:send)
 POST /api/whatsapp/self/start | /stop | /logout     # Hubungkan/QR, Putuskan, hapus sesi
 POST /api/whatsapp/self/test {target}               # target boleh 1 nomor; broadcast via Nomor Penerima (koma)
+GET  /api/backup                                    # status + daftar file (admin)
+POST /api/backup                                    # buat backup server (admin)
+GET  /api/backup/download/:name                     # unduh .sql (admin)
+POST /api/backup/upload (file)                      # upload .sql ke server (admin)
+POST /api/backup/restore {name|file, confirm}       # restore, confirm = nama DB persis (admin)
+DELETE /api/backup/:name                            # hapus file server, pra-restore dilindungi (admin)
 GET  /api/notifications/stream?token=               # SSE (1 koneksi per user, lama ditutup otomatis)
 GET  /api/geo/tiles/{z}/{x}/{y}.png, /api/geo/search?q=
 GET  /api/attendance, /api/reports/preview, /api/audit, /api/me

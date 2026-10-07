@@ -33,6 +33,7 @@ const PERMISSIONS = {
   'users:manage': ['admin'],
   'settings:read': ['admin', 'hr'],
   'settings:write': ['admin'],
+  'backup:manage': ['admin'],
   'notify:send': ['admin', 'hr'],
   // Jejak audit memuat perubahan internal (termasuk siapa yang mengganti
   // password), jadi tidak dibuka untuk role read-only.

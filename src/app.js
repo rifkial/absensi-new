@@ -19,6 +19,7 @@ const settingsRoutes = require('./routes/settings');
 const auditRoutes = require('./routes/audit');
 const notificationRoutes = require('./routes/notifications');
 const whatsappRoutes = require('./routes/whatsapp');
+const backupRoutes = require('./routes/backup');
 const meRoutes = require('./routes/me');
 
 /**
@@ -149,6 +150,7 @@ function createApp() {
   app.use('/api/audit', auditRoutes);
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/whatsapp', whatsappRoutes);
+  app.use('/api/backup', backupRoutes);
   app.use('/api/me', meRoutes);
 
   // Frontend

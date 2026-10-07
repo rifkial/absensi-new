@@ -83,6 +83,10 @@ const config = {
     bcryptRounds: int('BCRYPT_ROUNDS', 10),
   },
 
+  backup: {
+    keep: int('BACKUP_KEEP', 10),
+  },
+
   attendance: {
     cutoffTime: str('ATTENDANCE_CUTOFF_TIME', '23:59:59'),
     defaultLateTolerance: int('DEFAULT_LATE_TOLERANCE', 10),

@@ -7,8 +7,11 @@ storage/uploads/*
 !storage/uploads/.gitkeep
 storage/tmp/
 storage/whatsapp-session/
+storage/backups/*.sql
+!storage/backups/.gitkeep
 .DS_Store
 Thumbs.db
 *.xlsx
 *.csv
 coverage/
+.wwebjs-cache/
