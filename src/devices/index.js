@@ -3,6 +3,7 @@
 const { adapter: zktecoAdapter } = require('./zkteco4370/adapter');
 const { pushAdapter } = require('./pushhttp/adapter');
 const { adapter: csvAdapter } = require('./csv/adapter');
+const models = require('./models');
 
 /**
  * Registry adapter perangkat.
@@ -52,6 +53,8 @@ module.exports = {
   getAdapter,
   hasAdapter,
   listProtocols,
+  listModels: models.listModels,
+  defaultPort: models.defaultPort,
   zktecoAdapter,
   pushAdapter,
   csvAdapter,

@@ -30,6 +30,7 @@ router.get(
       ok: true,
       data: {
         protocols: devicesRegistry.listProtocols(),
+        models: devicesRegistry.listModels(),
         push: {
           port: config.server.pushPort,
           server_address_hint: getLocalAddressHint(),

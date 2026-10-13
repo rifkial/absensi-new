@@ -165,7 +165,7 @@
     var columns = [
       { key: 'name', label: 'Nama', render: function (r) {
         return '<div style="font-weight:500">' + esc(r.name) + '</div>' +
-          '<div class="small faint mono">' + esc(r.host || '-') + ':' + esc(r.port) + '</div>';
+          '<div class="small faint mono">' + esc(r.ip_address || '-') + ':' + esc(r.port) + '</div>';
       } },
       { key: 'protocol', label: 'Protokol', render: function (r) {
         return '<span class="badge info">' + esc(protocolLabel(r.protocol)) + '</span>';
@@ -266,6 +266,96 @@
     return map[key] || key;
   }
 
+  function protocolMeta(key) {
+    var list = (protocols && protocols.protocols) || [];
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i].protocol === key) return list[i];
+    }
+    return null;
+  }
+
+  function deviceModels() {
+    var fallbacks = {
+      'fingerspot-revo-w-202bnc': revoSetupGuide(),
+      'solution-all-series': solutionSetupGuide(),
+    };
+    if (protocols && protocols.models && protocols.models.length > 0) {
+      return protocols.models.map(function (m) {
+        if (!m.setup && fallbacks[m.id]) m.setup = fallbacks[m.id];
+        return m;
+      });
+    }
+    return [
+      { id: 'generic-zkteco', brand: 'Umum', model: 'ZKTeco-compatible', protocol: 'zkteco-tcp', port: 4370, notes: '' },
+      { id: 'fingerspot-revo-w-202bnc', brand: 'Fingerspot', model: 'Revo W-202BNC', protocol: 'zkteco-tcp', port: 4370, notes: '', setup: fallbacks['fingerspot-revo-w-202bnc'] },
+      { id: 'solution-all-series', brand: 'Solution', model: 'All Series', protocol: 'zkteco-tcp', port: 4370, notes: '', setup: fallbacks['solution-all-series'] },
+    ];
+  }
+
+  function solutionSetupGuide() {
+    return [
+      { title: 'Cara 1 - TCP/IP (direkomendasikan: server menarik data dari mesin)', steps: [
+        'Di mesin: Menu > Setting / Pengaturan > Jaringan / Network / Comm.',
+        'IP Address: satu subnet dengan server (mis. 192.168.1.202), Subnet Mask: 255.255.255.0, Gateway: 192.168.1.1.',
+        'Port / Comm Port: 4370 (biarkan default). Device ID: 1.',
+        'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "ZKTeco TCP (port 4370)".',
+      ] },
+      { title: 'Cara 2 - PUSH / ADMS (mesin yang mengirim log ke server)', steps: [
+        'Di mesin: Menu > Setting > Cloud Server / ADMS / Server Setting (bila tersedia di seri ini).',
+        'Server Address: IP komputer server ini, Server Port: 3001, Enable Domain Name: Off.',
+        'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "PUSH HTTP (ADMS)" - SN terisi otomatis.',
+      ] },
+      { title: 'Catatan', steps: [
+        'Pilih salah satu mode saja (TCP atau PUSH), jangan dua-duanya sekaligus.',
+        'Untuk mode PUSH, pastikan firewall server mengizinkan port 3001.',
+        'PIN karyawan di mesin harus sama dengan kolom "PIN Mesin" di data karyawan.',
+        'Bila seri lama tanpa menu ADMS / Cloud, pakai Cara 1 (TCP) atau unduh log via USB lalu impor menu Impor File.',
+      ] },
+    ];
+  }
+
+  function revoSetupGuide() {
+    return [
+      { title: 'Cara 1 - TCP/IP (direkomendasikan: server menarik data dari mesin)', steps: [
+        'Di mesin: Menu > Komunikasi (Comm) > Ethernet / Pengaturan Jaringan.',
+        'IP Address: 192.168.1.201 (satu subnet dengan server), Subnet Mask: 255.255.255.0, Gateway: 192.168.1.1.',
+        'Port / Comm Port: 4370 (biarkan default). Device ID: 1.',
+        'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "ZKTeco TCP (port 4370)".',
+      ] },
+      { title: 'Cara 2 - PUSH / ADMS (mesin yang mengirim log ke server)', steps: [
+        'Di mesin: Menu > Cloud Server / ADMS / Server Setting.',
+        'Server Address: IP komputer server ini, Server Port: 3001, Enable Domain Name: Off.',
+        'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "PUSH HTTP (ADMS)" - SN terisi otomatis.',
+      ] },
+      { title: 'Koneksi WiFi', steps: [
+        'Di mesin: Menu > Network > WiFi, pilih SSID lalu masukkan password.',
+        'Jarak mesin ke router disarankan maksimal 5 meter; lebih dari itu pakai kabel LAN atau WiFi repeater.',
+      ] },
+      { title: 'Catatan', steps: [
+        'Pilih salah satu mode saja (TCP atau PUSH), jangan dua-duanya sekaligus.',
+        'Untuk mode PUSH, pastikan firewall server mengizinkan port 3001.',
+        'PIN karyawan di mesin (bisa sampai 22 digit) harus sama dengan kolom "PIN Mesin" di data karyawan.',
+      ] },
+    ];
+  }
+
+  function paintModelSetup(el, model) {
+    var box = el.querySelector('#dModelSetup');
+    if (!box) return;
+    if (!model || !model.setup || model.setup.length === 0) { box.innerHTML = ''; return; }
+    var html = '<div class="callout mt"><strong>Panduan setting ' + esc(model.brand + ' ' + model.model) + ' (di mesin)</strong>';
+    for (var i = 0; i < model.setup.length; i += 1) {
+      var section = model.setup[i];
+      html += '<div style="margin-top:8px"><strong>' + esc(section.title) + '</strong><ol class="small" style="padding-left:20px;line-height:1.8;margin:4px 0 0">';
+      for (var j = 0; j < section.steps.length; j += 1) {
+        html += '<li>' + esc(section.steps[j]) + '</li>';
+      }
+      html += '</ol></div>';
+    }
+    html += '</div>';
+    box.innerHTML = html;
+  }
+
   function pushHint(push) {
     return '<div class="card"><div class="card-body">' +
       '<div class="callout"><strong>Setup mesin mode PUSH / ADMS</strong>' +
@@ -283,17 +373,33 @@
   function openForm(device) {
     var isEdit = Boolean(device);
     var list = (protocols && protocols.protocols) || [];
+    var models = deviceModels();
     var currentProto = isEdit ? device.protocol : 'zkteco-tcp';
 
     var protoOptions = list.map(function (p) {
-      return { key: p.key, label: p.label, hint: p.hint, port: p.default_port, note: p.notes };
+      return { key: p.protocol, label: p.label, hint: p.description };
     });
-    var selected = protoOptions.find(function (p) { return p.key === currentProto; }) || protoOptions[0] || {};
+    var selected = null;
+    for (var si = 0; si < protoOptions.length; si += 1) {
+      if (protoOptions[si].key === currentProto) selected = protoOptions[si];
+    }
+    if (!selected) selected = protoOptions[0] || { key: currentProto, label: currentProto, hint: '' };
+    var defaultPorts = { 'zkteco-tcp': 4370, 'push-http': 3001, 'csv': 0 };
 
     App.modal({
       title: isEdit ? 'Ubah Perangkat: ' + device.name : 'Tambah Perangkat Fingerprint',
       size: 'wide',
       bodyHtml:
+        '<div class="field">' +
+          '<label>Model Mesin</label>' +
+          '<select id="dModel">' +
+            models.map(function (m) {
+              return '<option value="' + escAttr(m.id) + '">' + esc(m.brand + ' ' + m.model) + '</option>';
+            }).join('') +
+          '</select>' +
+          '<span class="help" id="dModelHint"></span>' +
+        '</div>' +
+        '<div id="dModelSetup"></div>' +
         '<div class="form-grid">' +
           '<div class="field">' +
             '<label>Nama Perangkat <span class="req">*</span></label>' +
@@ -310,21 +416,21 @@
           '</div>' +
           '<div class="field">' +
             '<label>Alamat IP / Host <span class="req">*</span></label>' +
-            '<input type="text" id="dHost" value="' + esc(isEdit ? device.host || '' : '') + '" placeholder="192.168.1.201">' +
+            '<input type="text" id="dHost" value="' + esc(isEdit ? device.ip_address || '' : '') + '" placeholder="192.168.1.201">' +
             '<span class="help">Boleh juga hostname, mis. fingerprint.kantor.local</span>' +
           '</div>' +
           '<div class="field">' +
             '<label>Port</label>' +
-            '<input type="number" id="dPort" value="' + esc(isEdit ? device.port : (selected.port || 4370)) + '">' +
+            '<input type="number" id="dPort" value="' + esc(isEdit ? device.port : (defaultPorts[currentProto] || 4370)) + '">' +
           '</div>' +
           '<div class="field">' +
             '<label>Lokasi</label>' +
             '<input type="text" id="dLocation" value="' + esc(isEdit ? device.location || '' : '') + '" placeholder="mis. Lantai 1, dekat pintu depan">' +
           '</div>' +
           '<div class="field">' +
-            '<label>Password Mesin</label>' +
-            '<input type="password" id="dPassword" value="" placeholder="' + (isEdit ? 'Kosongkan bila tidak diubah' : 'Umumnya 0 / kosong') + '">' +
-            '<span class="help">Dikirim sebagaiCommunicationPassword saat handshake TCP.</span>' +
+            '<label>Serial Number (opsional)</label>' +
+            '<input type="text" id="dSerial" value="' + esc(isEdit ? device.serial_number || '' : '') + '" placeholder="Otomatis terisi saat handshake PUSH">' +
+            '<span class="help">Untuk mode PUSH, terisi otomatis dari SN mesin.</span>' +
           '</div>' +
         '</div>' +
 
@@ -333,20 +439,16 @@
         '<div class="form-grid">' +
           '<div class="field checkbox">' +
             '<input type="checkbox" id="dActive"' + (!isEdit || Number(device.is_active) === 1 ? ' checked' : '') + '>' +
-            '<label for="dActive">Aktifkan sinkronisasi otomatis</label>' +
+            '<label for="dActive">Perangkat aktif</label>' +
           '</div>' +
           '<div class="field checkbox">' +
-            '<input type="checkbox" id="dGen"' + (!isEdit || Number(device.auto_regenerate) === 1 ? ' checked' : '') + '>' +
-            '<label for="dGen">Hitung ulang rekap setelah sync</label>' +
-          '</div>' +
-          '<div class="field checkbox">' +
-            '<input type="checkbox" id="dClear"' + (isEdit && Number(device.clear_logs_after_sync) === 1 ? ' checked' : '') + '>' +
-            '<label for="dClear">Hapus log di mesin setelah sync</label>' +
+            '<input type="checkbox" id="dAuto"' + (!isEdit || Number(device.auto_sync) === 1 ? ' checked' : '') + '>' +
+            '<label for="dAuto">Ikut sinkronisasi otomatis</label>' +
           '</div>' +
           '<div class="field">' +
-            '<label>Regenerasi Rekap (hari)</label>' +
-            '<input type="number" id="dRegenDays" value="' + esc(isEdit ? device.regenerate_days : 2) + '" min="0" max="30">' +
-            '<span class="help">0 = hanya hari ini, 1 = hari ini + kemarin, 2 = 2 hari ke belakang, dst.</span>' +
+            '<label>Interval Sync (menit)</label>' +
+            '<input type="number" id="dInterval" value="' + esc(isEdit ? device.sync_interval_min : 5) + '" min="1" max="1440">' +
+            '<span class="help">Jeda minimum antar penarikan otomatis untuk perangkat ini.</span>' +
           '</div>' +
         '</div>' +
         '<div class="callout warning mt"><strong>Catatan mode PUSH</strong>' +
@@ -365,23 +467,22 @@
             var port = Number(el.querySelector('#dPort').value) || 0;
 
             if (!name) { App.toast('Nama perangkat wajib diisi.', 'error'); return false; }
-            if (proto !== 'csv' && !host) { App.toast('Alamat IP / host wajib diisi.', 'error'); return false; }
+            if (proto === 'zkteco-tcp' && !host) { App.toast('Alamat IP / host wajib diisi.', 'error'); return false; }
             if (port < 0 || port > 65535) { App.toast('Port tidak valid.', 'error'); return false; }
+
+            var serialVal = el.querySelector('#dSerial').value.trim();
 
             var payload = {
               name: name,
               protocol: proto,
-              host: host || null,
+              ip_address: host || null,
               port: port,
               location: el.querySelector('#dLocation').value.trim() || null,
+              serial_number: serialVal || null,
               is_active: el.querySelector('#dActive').checked ? 1 : 0,
-              auto_regenerate: el.querySelector('#dGen').checked ? 1 : 0,
-              clear_logs_after_sync: el.querySelector('#dClear').checked ? 1 : 0,
-              regenerate_days: Number(el.querySelector('#dRegenDays').value) || 0,
+              auto_sync: el.querySelector('#dAuto').checked ? 1 : 0,
+              sync_interval_min: Number(el.querySelector('#dInterval').value) || 5,
             };
-
-            var pwd = el.querySelector('#dPassword').value;
-            if (pwd) payload.password = pwd;
 
             var request = isEdit ? api.put('/devices/' + device.id, payload) : api.post('/devices', payload);
             request
@@ -400,12 +501,39 @@
       ],
 
       onMount: function (el) {
-        el.querySelector('#dProto').addEventListener('change', function () {
-          var p = protoOptions.find(function (x) { return x.key === this.value; }, this);
-          if (!p) return;
-          el.querySelector('#dProtoHint').textContent = p.hint || '';
-          if (p.port) el.querySelector('#dPort').value = p.port;
+        var protoSelect = el.querySelector('#dProto');
+        protoSelect.addEventListener('change', function () {
+          var p = null;
+          for (var i = 0; i < protoOptions.length; i += 1) {
+            if (protoOptions[i].key === this.value) p = protoOptions[i];
+          }
+          el.querySelector('#dProtoHint').textContent = p ? (p.hint || '') : '';
+          if (defaultPorts[this.value] !== undefined) el.querySelector('#dPort').value = defaultPorts[this.value];
         });
+
+        var modelSelect = el.querySelector('#dModel');
+        modelSelect.addEventListener('change', function () {
+          var m = null;
+          for (var i = 0; i < models.length; i += 1) {
+            if (models[i].id === this.value) m = models[i];
+          }
+          if (!m) { el.querySelector('#dModelHint').textContent = ''; return; }
+
+          protoSelect.value = m.protocol;
+          el.querySelector('#dPort').value = m.port;
+          el.querySelector('#dProtoHint').textContent = (protocolMeta(m.protocol) || {}).description || '';
+          el.querySelector('#dModelHint').textContent = m.notes || '';
+          paintModelSetup(el, m);
+          if (!el.querySelector('#dName').value.trim()) el.querySelector('#dName').value = m.brand + ' ' + m.model;
+        });
+        var initial = null;
+        for (var mi = 0; mi < models.length; mi += 1) {
+          if (models[mi].id === modelSelect.value) initial = models[mi];
+        }
+        if (initial) {
+          el.querySelector('#dModelHint').textContent = initial.notes || '';
+          paintModelSetup(el, initial);
+        }
       },
     });
   }
@@ -426,12 +554,12 @@
           title: 'Hasil Uji Koneksi: ' + device.name,
           bodyHtml:
             '<div class="callout success"><strong>Koneksi berhasil</strong>' +
-            'Mesin merespons dalam ' + App.formatNumber(res.elapsed_ms || 0) + ' ms.</div>' +
+            'Mesin merespons dalam ' + App.formatNumber(res.duration_ms || 0) + ' ms.</div>' +
             App.table([
               { key: 'label', label: 'Informasi' },
               { key: 'value', label: 'Nilai' },
             ], [
-              { label: 'Alamat', value: device.host + ':' + device.port },
+              { label: 'Alamat', value: (device.ip_address || '-') + ':' + device.port },
               { label: 'Protokol', value: protocolLabel(device.protocol) },
               { label: 'Versi Firmware', value: info.firmwareVersion || '-' },
               { label: 'Jumlah User', value: info.users !== undefined ? App.formatNumber(info.users) : '-' },
@@ -448,13 +576,13 @@
             '<div class="callout danger"><strong>Koneksi gagal</strong>' + esc(err.message) + '</div>' +
             '<h4 style="margin:14px 0 8px">Langkah Troubleshooting</h4>' +
             '<ol class="small" style="padding-left:20px;line-height:1.9">' +
-              '<li>Pastikan komputer dan mesin berada di jaringan yang sama. Coba <code>ping ' + esc(device.host) + '</code>.</li>' +
+              '<li>Pastikan komputer dan mesin berada di jaringan yang sama. Coba <code>ping ' + esc(device.ip_address || '') + '</code>.</li>' +
               '<li>Buka menu <strong>Comm / Network</strong> pada mesin, pastikan mode <strong>Ethernet</strong> dan IP benar.</li>' +
               '<li>Pastikan port yang diisi sesuai dengan port protokol pada mesin. ZKTeco umumnya 4370.</li>' +
               '<li>Matikan software vendor (mis. ZKTeco Software) yang mungkin sedang memegang koneksi mesin.</li>' +
               '<li>Periksa firewall Windows: izinkan Node.js untuk jaringan privat.</li>' +
               '<li>Jika mesin memakai password, isi password perangkat dengan benar.</li>' +
-              '<li>Coba gunakan tool <code>npm run probe -- ' + esc(device.host) + '</code> dari terminal.</li>' +
+              '<li>Coba gunakan tool <code>npm run probe -- ' + esc(device.ip_address || '') + '</code> dari terminal.</li>' +
             '</ol>',
           actions: [{ label: 'Tutup' }],
         });
@@ -763,7 +891,7 @@
       App.toast('Anda tidak punya hak akses menambah perangkat.', 'error');
       return;
     }
-    openForm({ host: ip, port: port, protocol: 'zkteco-tcp', name: 'Fingerprint ' + ip, location: '', is_active: 1, auto_regenerate: 1, clear_logs_after_sync: 0, regenerate_days: 2 });
+    openForm({ ip_address: ip, port: port, protocol: 'zkteco-tcp', name: 'Fingerprint ' + ip, location: '', is_active: 1, auto_sync: 1, sync_interval_min: 5 });
     App.toast('Lengkapi nama perangkat lalu simpan.', 'info');
   }
 })();
