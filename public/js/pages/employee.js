@@ -107,6 +107,17 @@
     return s.length >= 16 ? s.slice(11, 16) : s;
   }
 
+  var EMP_TYPE_LABELS = {
+    tetap: 'Karyawan Tetap',
+    kontrak: 'Karyawan Kontrak (PKWT)',
+    harian_lepas: 'Karyawan Harian Lepas',
+    magang: 'Karyawan Magang',
+  };
+
+  function empTypeLabel(value) {
+    return EMP_TYPE_LABELS[value] || EMP_TYPE_LABELS.tetap;
+  }
+
   // ------------------------------------------------------------------ Render
 
   function render(el) {
@@ -213,7 +224,7 @@
       size: 'large',
       bodyHtml:
         '<div class="callout">NIK: <strong>' + esc(s.employee.employee_code) + '</strong> · Nama: <strong>' +
-          esc(s.employee.name) + '</strong> · Hari kerja: ' + esc(String(s.attendance.days_work)) + '</div>' +
+          esc(s.employee.name) + '</strong> · Status Karyawan: <strong>' + esc(s.employee.status_karyawan_label) + '</strong> · Hari kerja: ' + esc(String(s.attendance.days_work)) + '</div>' +
         '<div class="grid-2">' +
           '<div><h4>Penghasilan</h4><div class="table-wrap"><table><tbody>' + earn +
             '<tr><td><strong>Total (A)</strong></td><td class="num"><strong>Rp ' + App.fmtNumber(s.totals.total_earning) + '</strong></td></tr>' +
@@ -240,7 +251,7 @@
             '@media print{.noprint{display:none}}</style></head><body>' +
             '<h2>SLIP GAJI KARYAWAN</h2><div>' + esc(s.company.name) + ' · Periode: ' + esc(s.period.label) + '</div>' +
             '<div>NIK: ' + esc(s.employee.employee_code) + ' · Nama: ' + esc(s.employee.name) + '</div>' +
-            '<div>Hari kerja: ' + esc(String(s.attendance.days_work)) + ' · Status: ' + esc(s.period.status) + '</div>' +
+            '<div>Status Karyawan: ' + esc(s.employee.status_karyawan_label) + ' · Hari kerja: ' + esc(String(s.attendance.days_work)) + ' · Status: ' + esc(s.period.status) + '</div>' +
             '<h3>Penghasilan</h3><table>' + earn + '</table>' +
             '<h3>Potongan</h3><table>' + ded + '</table>' +
             (co ? '<h3>Beban Perusahaan (info)</h3><table>' + co + '</table>' : '') +
@@ -275,6 +286,7 @@
             '<h2 class="card-title">Profil Saya</h2>' +
             '<span class="badge ' + (e.status === 'aktif' ? 'hadir' : 'belum') + '">' +
               esc(e.status) + '</span>' +
+            '<span class="small faint">' + esc(empTypeLabel(e.status_karyawan)) + '</span>' +
           '</div>' +
           '<div class="card-body">' +
             '<div class="grid-2">' +

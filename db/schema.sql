@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS employees (
   photo_path          VARCHAR(255) NULL,
   hire_date           DATE         NULL,
   status              ENUM('aktif','nonaktif','resign') NOT NULL DEFAULT 'aktif',
+  status_karyawan     ENUM('tetap','kontrak','harian_lepas','magang') NOT NULL DEFAULT 'tetap',
   fingerprint_status  ENUM('belum','terdaftar','gagal') NOT NULL DEFAULT 'belum'
                       COMMENT 'Status enrollment sidik jari di mesin',
   annual_leave_quota  SMALLINT UNSIGNED NOT NULL DEFAULT 0

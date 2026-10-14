@@ -197,6 +197,7 @@ async function upgradeEmployees(conn) {
   // cuti tahunan disetujui. Nilai default 0 supaya karyawan lama tidak suddenly
   // punya jatah tak terduga.
   const columns = [
+    ['status_karyawan', "`status_karyawan` ENUM('tetap','kontrak','harian_lepas','magang') NOT NULL DEFAULT 'tetap' AFTER `status`"],
     ['annual_leave_quota', '`annual_leave_quota` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `fingerprint_status`'],
     ['annual_leave_used', '`annual_leave_used` SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER `annual_leave_quota`'],
     ['annual_leave_reset_at', '`annual_leave_reset_at` DATETIME NULL AFTER `annual_leave_used`'],

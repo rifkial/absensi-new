@@ -748,7 +748,8 @@ async function buildSlip(itemId) {
   const settings = await settingsService.getAll();
 
   const employee = await db.queryOne(
-    `SELECT e.employee_code, e.name, e.status, dep.name AS department_name, pos.name AS position_name
+    `SELECT e.employee_code, e.name, e.status, e.status_karyawan,
+            dep.name AS department_name, pos.name AS position_name
        FROM employees e
        LEFT JOIN departments dep ON dep.id = e.department_id
        LEFT JOIN positions pos ON pos.id = e.position_id
@@ -757,6 +758,12 @@ async function buildSlip(itemId) {
   );
 
   const statusLabels = { aktif: 'Aktif', nonaktif: 'Nonaktif', resign: 'Resign' };
+  const employeeTypeLabels = {
+    tetap: 'Karyawan Tetap',
+    kontrak: 'Karyawan Kontrak (PKWT)',
+    harian_lepas: 'Karyawan Harian Lepas',
+    magang: 'Karyawan Magang',
+  };
 
   let approver = null;
   if (period.approved_by) {
@@ -788,6 +795,8 @@ async function buildSlip(itemId) {
       position_name: employee?.position_name || item.position_name,
       status: employee?.status || 'aktif',
       status_label: statusLabels[employee?.status] || 'Aktif',
+      status_karyawan: employee?.status_karyawan || 'tetap',
+      status_karyawan_label: employeeTypeLabels[employee?.status_karyawan] || employeeTypeLabels.tetap,
     },
     attendance: {
       days_work: item.days_work,

@@ -538,7 +538,8 @@
         '<div style="display:flex;gap:24px;margin:14px 0;flex-wrap:wrap">' +
           info('NIK', s.employee.employee_code) + info('Nama', s.employee.name) +
           info('Jabatan', s.employee.position_name || '-') + info('Unit Kerja', s.employee.department_name || '-') +
-          info('Status', s.employee.status_label) + info('Hari Kerja', String(s.attendance.days_work)) +
+          info('Status', s.employee.status_label) + info('Status Karyawan', s.employee.status_karyawan_label) +
+          info('Hari Kerja', String(s.attendance.days_work)) +
         '</div>' +
         '<div class="grid-2">' +
           '<div><h4>Penghasilan</h4><table style="width:100%">' + slipRows(s.earnings) +
@@ -601,14 +602,15 @@
       '<div class="head"><div><div class="co">' + esc(s.company.name) + '</div><div class="sub">' + esc(s.company.app_name) + '</div></div>' +
       '<div><div class="title">SLIP GAJI KARYAWAN</div><div class="sub">Periode: ' + esc(s.period.label) + '</div>' +
       '<div class="sub">Status: ' + esc(STATUS_LABELS[s.period.status] || s.period.status) + '</div></div></div>' +
-      '<table class="ident"><tr>' +
-        '<td><b>NIK</b><br>' + esc(s.employee.employee_code) + '</td>' +
-        '<td><b>Nama</b><br>' + esc(s.employee.name) + '</td>' +
-        '<td><b>Jabatan</b><br>' + esc(s.employee.position_name || '-') + '</td>' +
-        '<td><b>Unit Kerja</b><br>' + esc(s.employee.department_name || '-') + '</td>' +
-        '<td><b>Status</b><br>' + esc(s.employee.status_label) + '</td>' +
-        '<td><b>Hari Kerja</b><br>' + esc(String(s.attendance.days_work)) + '</td>' +
-      '</tr></table>' +
+       '<table class="ident"><tr>' +
+         '<td><b>NIK</b><br>' + esc(s.employee.employee_code) + '</td>' +
+         '<td><b>Nama</b><br>' + esc(s.employee.name) + '</td>' +
+         '<td><b>Jabatan</b><br>' + esc(s.employee.position_name || '-') + '</td>' +
+         '<td><b>Unit Kerja</b><br>' + esc(s.employee.department_name || '-') + '</td>' +
+         '<td><b>Status</b><br>' + esc(s.employee.status_label) + '</td>' +
+         '<td><b>Status Karyawan</b><br>' + esc(s.employee.status_karyawan_label) + '</td>' +
+         '<td><b>Hari Kerja</b><br>' + esc(String(s.attendance.days_work)) + '</td>' +
+       '</tr></table>' +
       '<div class="cols">' +
         '<div><h4>Penghasilan</h4><table>' + earnings +
           '<tr class="tot"><td>Total Penghasilan (A)</td><td class="num">' + fmtIdr(s.totals.total_earning) + '</td></tr></table></div>' +

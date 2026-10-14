@@ -19,7 +19,8 @@ Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 - Jejak audit di Pengaturan memakai pagination 10/halaman
 - Pengajuan cuti/izin/dinas + reimburse (filter rentang tanggal, impor/ekspor Excel)
 - Surat Perjalanan Dinas (nomor + transportasi, cetak) untuk dinas yang disetujui
-- Portal mandiri karyawan (`role employee`): rekap, pengajuan, check-in dinas GPS + selfie
+- Portal mandiri karyawan (`role employee`): rekap, pengajuan, check-in dinas GPS + selfie, lihat slip gaji sendiri
+- Status karyawan: empat pilihan (Tetap, Kontrak/PKWT, Harian Lepas, Magang) dapat dipilih di data karyawan dan ditampilkan pada slip gaji
 - Auto-sync mesin MATI default (tombol hidup/mati di menu Perangkat, tanpa restart)
 - Sync manual jalan di background (202 + polling status, UI tidak menggantung)
 - Notifikasi realtime SSE + bell unread + halaman riwayat `/#/notifications` (pagination, admin & employee), email SMTP + WhatsApp nomor sendiri (scan QR, antrean anti-banned FIFO + jeda acak + batas/menit/hari) / gateway

@@ -8,7 +8,7 @@ const { toDate } = require('../utils/date');
 const SELECT_COLUMNS = `
   e.id, e.employee_code, e.device_user_id, e.name, e.gender,
   e.department_id, e.position_id, e.shift_id, e.phone, e.email, e.address,
-  e.photo_path, e.hire_date, e.status, e.fingerprint_status, e.notes,
+  e.photo_path, e.hire_date, e.status, e.status_karyawan, e.fingerprint_status, e.notes,
   e.annual_leave_quota, e.annual_leave_used, e.annual_leave_reset_at,
   e.created_at, e.updated_at,
   dep.name AS department_name,
@@ -185,6 +185,14 @@ function normalize(payload, { partial = false } = {}) {
     data.fingerprint_status = fp;
   }
 
+  if (payload.status_karyawan !== undefined) {
+    const sk = str(payload.status_karyawan, { maxLength: 20 });
+    if (!['tetap', 'kontrak', 'harian_lepas', 'magang'].includes(sk)) {
+      throw badRequest("status_karyawan harus 'tetap', 'kontrak', 'harian_lepas', atau 'magang'.");
+    }
+    data.status_karyawan = sk;
+  }
+
   return data;
 }
 
@@ -229,6 +237,7 @@ async function create(payload) {
   const data = normalize(payload);
   if (!data.device_user_id) delete data.device_user_id;
   data.status = data.status || 'aktif';
+  data.status_karyawan = data.status_karyawan || 'tetap';
   data.fingerprint_status = data.fingerprint_status || 'belum';
 
   await assertUnique(data.employee_code, data.device_user_id || null);

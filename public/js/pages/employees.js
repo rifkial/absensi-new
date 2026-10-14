@@ -308,6 +308,8 @@
         field('hire_date', 'Tanggal Masuk', isEdit ? (row.hire_date || '').slice(0, 10) : '', false, 'Format YYYY-MM-DD.') +
         selectField('status', 'Status', isEdit ? row.status : 'aktif',
           [['aktif', 'Aktif'], ['nonaktif', 'Nonaktif'], ['resign', 'Resign']]) +
+        selectField('status_karyawan', 'Status Karyawan', isEdit ? row.status_karyawan : 'tetap',
+          [['tetap', 'Karyawan Tetap'], ['kontrak', 'Karyawan Kontrak (PKWT)'], ['harian_lepas', 'Karyawan Harian Lepas'], ['magang', 'Karyawan Magang']]) +
         quotaField(isEdit ? row : null) +
         field('address', 'Alamat', isEdit ? row.address || '' : '', false, '', 'textarea') +
         field('notes', 'Catatan', isEdit ? row.notes || '' : '', false, '', 'textarea') +
@@ -555,6 +557,7 @@
       address: get('address') || null,
       hire_date: get('hire_date') || null,
       status: get('status') || 'aktif',
+      status_karyawan: get('status_karyawan') || 'tetap',
       notes: get('notes') || null,
       fingerprint_status: isEdit ? undefined : 'belum',
       annual_leave_quota: quotaValue(get('annual_leave_quota')),
@@ -633,6 +636,10 @@
                   { key: 'email', label: 'Email' },
                   { key: 'hire_date', label: 'Tanggal Masuk', render: function (r) { return App.fmtDate(r.hire_date); } },
                   { key: 'status', label: 'Status' },
+                  { key: 'status_karyawan', label: 'Status Karyawan', render: function (r) {
+                    var labels = { tetap: 'Karyawan Tetap', kontrak: 'Karyawan Kontrak (PKWT)', harian_lepas: 'Karyawan Harian Lepas', magang: 'Karyawan Magang' };
+                    return esc(labels[r.status_karyawan] || r.status_karyawan || 'Karyawan Tetap');
+                  } },
                 ], [e], { empty: 'Data tidak ditemukan.' }) +
 
                 '<h4 style="margin:16px 0 8px">Jatah Cuti Tahunan</h4>' +

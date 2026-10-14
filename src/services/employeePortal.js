@@ -101,6 +101,7 @@ async function getProfile(user, employeeId) {
       email: employee.email,
       address: employee.address,
       status: employee.status,
+      status_karyawan: employee.status_karyawan,
     },
     shift,
     // Jadwal per tanggal (jadwal > shift default): 7 hari ke depan + 7 hari lalu.
