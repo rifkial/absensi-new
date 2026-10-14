@@ -276,7 +276,7 @@
 
   function deviceModels() {
     var fallbacks = {
-      'fingerspot-revo-w-202bnc': revoSetupGuide(),
+      'fingerspot-all-series': fingerspotSetupGuide(),
       'solution-all-series': solutionSetupGuide(),
     };
     if (protocols && protocols.models && protocols.models.length > 0) {
@@ -287,7 +287,7 @@
     }
     return [
       { id: 'generic-zkteco', brand: 'Umum', model: 'ZKTeco-compatible', protocol: 'zkteco-tcp', port: 4370, notes: '' },
-      { id: 'fingerspot-revo-w-202bnc', brand: 'Fingerspot', model: 'Revo W-202BNC', protocol: 'zkteco-tcp', port: 4370, notes: '', setup: fallbacks['fingerspot-revo-w-202bnc'] },
+      { id: 'fingerspot-all-series', brand: 'Fingerspot', model: 'All Series', protocol: 'zkteco-tcp', port: 4370, notes: '', setup: fallbacks['fingerspot-all-series'] },
       { id: 'solution-all-series', brand: 'Solution', model: 'All Series', protocol: 'zkteco-tcp', port: 4370, notes: '', setup: fallbacks['solution-all-series'] },
     ];
   }
@@ -314,16 +314,16 @@
     ];
   }
 
-  function revoSetupGuide() {
+  function fingerspotSetupGuide() {
     return [
       { title: 'Cara 1 - TCP/IP (direkomendasikan: server menarik data dari mesin)', steps: [
-        'Di mesin: Menu > Komunikasi (Comm) > Ethernet / Pengaturan Jaringan.',
-        'IP Address: 192.168.1.201 (satu subnet dengan server), Subnet Mask: 255.255.255.0, Gateway: 192.168.1.1.',
+        'Di mesin: Menu > Komunikasi (Comm) / Network > Ethernet / Pengaturan Jaringan.',
+        'IP Address: satu subnet dengan server (mis. 192.168.1.201), Subnet Mask: 255.255.255.0, Gateway: 192.168.1.1.',
         'Port / Comm Port: 4370 (biarkan default). Device ID: 1.',
         'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "ZKTeco TCP (port 4370)".',
       ] },
       { title: 'Cara 2 - PUSH / ADMS (mesin yang mengirim log ke server)', steps: [
-        'Di mesin: Menu > Cloud Server / ADMS / Server Setting.',
+        'Di mesin: Menu > Cloud Server / ADMS / Server Setting (bila tersedia di seri ini).',
         'Server Address: IP komputer server ini, Server Port: 3001, Enable Domain Name: Off.',
         'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "PUSH HTTP (ADMS)" - SN terisi otomatis.',
       ] },
@@ -332,9 +332,11 @@
         'Jarak mesin ke router disarankan maksimal 5 meter; lebih dari itu pakai kabel LAN atau WiFi repeater.',
       ] },
       { title: 'Catatan', steps: [
+        'Berlaku untuk semua seri Fingerspot (Revo, Solution, X-Series, Neos, dsb).',
         'Pilih salah satu mode saja (TCP atau PUSH), jangan dua-duanya sekaligus.',
         'Untuk mode PUSH, pastikan firewall server mengizinkan port 3001.',
-        'PIN karyawan di mesin (bisa sampai 22 digit) harus sama dengan kolom "PIN Mesin" di data karyawan.',
+        'PIN karyawan di mesin harus sama dengan kolom "PIN Mesin" di data karyawan.',
+        'Bila seri lama tanpa menu ADMS / Cloud, pakai Cara 1 (TCP) atau unduh log via USB lalu impor menu Impor File.',
       ] },
     ];
   }

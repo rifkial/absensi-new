@@ -5,6 +5,7 @@ const { badRequest, notFound, conflict, str, boolParam } = require('../utils/err
 const {
   timeToMinutes,
   minutesToTime,
+  isoDayOfWeek,
   parseWorkDays,
   parseWorkDaysStrict,
   isWorkDay,
@@ -19,7 +20,7 @@ const config = require('../config');
 
 const SELECT = `
   id, code, name, start_time, end_time, break_start, break_end,
-  late_tolerance_min, max_work_minutes, work_days, half_day, is_active,
+  late_tolerance_min, max_work_minutes, work_days, day_times, half_day, is_active,
   created_at, updated_at
 `;
 
@@ -48,6 +49,63 @@ async function getByCode(code) {
 /** Tambahkan durasi kerja efektif (menit) hasil perhitungan, bukan kolom DB. */
 function withDuration(row) {
   return { ...row, duration_minutes: shiftDurationMinutes(row) };
+}
+
+/**
+ * Parse day_times (JSON string atau objek) jadi objek ternormalisasi.
+ * Format: { "6": { "start": "08:00", "end": "15:30" } } — kunci ISO 1-7.
+ * Nilai jam tidak valid dibuang; hari tanpa override tidak ikut.
+ */
+function parseDayTimes(raw) {
+  if (!raw) return {};
+  let obj = raw;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+
+  const out = {};
+  for (const key of Object.keys(obj)) {
+    const day = Number(key);
+    if (!Number.isInteger(day) || day < 1 || day > 7) continue;
+    const val = obj[key];
+    if (!val || typeof val !== 'object') continue;
+
+    const entry = {};
+    if (val.start !== undefined && val.start !== null && val.start !== '') {
+      const m = timeToMinutes(val.start);
+      if (m !== null) entry.start = minutesToTime(m);
+    }
+    if (val.end !== undefined && val.end !== null && val.end !== '') {
+      const m = timeToMinutes(val.end);
+      if (m !== null) entry.end = minutesToTime(m);
+    }
+    if (entry.start || entry.end) out[day] = entry;
+  }
+  return out;
+}
+
+/**
+ * Shift efektif untuk tanggal tertentu: jam utama ditimpa day_times bila hari
+ * tersebut punya override (mis. Sabtu pulang 15:30). Fungsi murni.
+ */
+function forDate(shift, date) {
+  if (!shift || !shift.day_times) return shift;
+
+  const overrides = parseDayTimes(shift.day_times);
+  const day = isoDayOfWeek(date);
+  const override = day ? overrides[day] : null;
+  if (!override) return shift;
+
+  return {
+    ...shift,
+    start_time: override.start || shift.start_time,
+    end_time: override.end || shift.end_time,
+  };
 }
 
 /** Validasi & normalisasi payload shift. */
@@ -115,6 +173,11 @@ function normalize(payload, { partial = false } = {}) {
     // Validasi ketat: nilai di luar 1-7 (mis. "0" dari UI versi lama) harus
     // ditolak, bukan dibuang diam-diam supaya hari Minggu tidak hilang.
     data.work_days = parseWorkDaysStrict(payload.work_days, { label: 'work_days' }).join(',');
+  }
+
+  if (payload.day_times !== undefined) {
+    const parsed = parseDayTimes(payload.day_times);
+    data.day_times = Object.keys(parsed).length > 0 ? JSON.stringify(parsed) : null;
   }
 
   if (payload.half_day !== undefined) {
@@ -248,7 +311,7 @@ function maxWorkMinutesOf(shift) {
 async function options() {
   const rows = await db.queryAll(
     `SELECT id, code, name, start_time, end_time, break_start, break_end,
-            work_days, late_tolerance_min
+            work_days, day_times, late_tolerance_min
        FROM shifts
       WHERE is_active = 1
       ORDER BY start_time ASC, name ASC`
@@ -271,4 +334,6 @@ module.exports = {
   shiftDurationMinutes,
   toleranceOf,
   maxWorkMinutesOf,
+  parseDayTimes,
+  forDate,
 };

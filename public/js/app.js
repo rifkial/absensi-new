@@ -19,6 +19,7 @@
     employees: { title: 'Karyawan', icon: '&#128101;', module: 'employees' },
     master: { title: 'Unit Kerja & Jabatan', icon: '&#127970;', module: 'master', perm: 'master:read' },
     shifts: { title: 'Shift & Jadwal', icon: '&#9200;', module: 'shifts' },
+    payroll: { title: 'Payroll', icon: '&#128176;', module: 'payroll', perm: 'payroll:read' },
     holidays: { title: 'Hari Libur', icon: '&#127796;', module: 'holidays', perm: 'holidays:read' },
     reports: { title: 'Laporan', icon: '&#128202;', module: 'reports' },
     users: { title: 'Pengguna', icon: '&#128100;', module: 'users', perm: 'users:manage' },
@@ -58,6 +59,12 @@
         { route: 'shifts', label: 'Shift & Jadwal' },
         { route: 'holidays', label: 'Hari Libur', perm: 'holidays:read' },
         { route: 'devices', label: 'Mesin Fingerprint' },
+      ],
+    },
+    {
+      label: 'Penggajian',
+      items: [
+        { route: 'payroll', label: 'Payroll', perm: 'payroll:read' },
       ],
     },
     {

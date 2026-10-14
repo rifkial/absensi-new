@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   late_tolerance_min    SMALLINT UNSIGNED NOT NULL DEFAULT 10,
   max_work_minutes      SMALLINT UNSIGNED NULL COMMENT 'NULL = pakai default global',
   work_days             VARCHAR(20)   NOT NULL DEFAULT '1,2,3,4,5',
+  day_times             TEXT          NULL COMMENT 'override jam per hari (JSON): {"6":{"start":"08:00","end":"15:30"}}. kosong = pakai jam utama',
   half_day              TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1 = tipe half day (cuti potong)',
   is_active             TINYINT(1)    NOT NULL DEFAULT 1,
   created_at            DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -502,4 +503,165 @@ SET @fk_sql = IF(@fk_exists > 0,
 );
 PREPARE stmt FROM @fk_sql;
 EXECUTE stmt;
+
+-- ---------------------------------------------------------------------------
+-- 20. Payroll / Penggajian
+--     Komponen gaji fleksibel (penghasilan/potongan/beban perusahaan),
+--     gaji pokok per karyawan, override komponen per karyawan, periode
+--     payroll bulanan, hasil perhitungan per karyawan, dan rincian baris.
+--
+--     Uang memakai DECIMAL(14,2) supaya tidak ada galat pembulatan biner.
+-- ---------------------------------------------------------------------------
+
+-- 20a. Master komponen gaji (template yang bisa dipakai semua karyawan)
+CREATE TABLE IF NOT EXISTS payroll_components (
+  id            INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  code          VARCHAR(30)   NOT NULL,
+  name          VARCHAR(100)  NOT NULL,
+  type          ENUM('penghasilan','potongan','beban_perusahaan') NOT NULL DEFAULT 'penghasilan',
+  category      VARCHAR(40)   NOT NULL DEFAULT 'lainnya',
+  calc_method   ENUM('tetap','persen','manual','absensi','lembur') NOT NULL DEFAULT 'tetap',
+  amount        DECIMAL(14,2) NOT NULL DEFAULT 0 COMMENT 'nominal utk metode tetap',
+  percent       DECIMAL(7,4)  NULL         COMMENT 'persen utk metode persen',
+  percent_base  ENUM('gaji_pokok','bruto','tunjangan','penghasilan_netto') NULL COMMENT 'dasar hitung persen',
+  rule_json     JSON          NULL         COMMENT 'aturan absensi/lembur, mis. {"per_hadir":20000}',
+  taxable       TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1 = masuk dasar PPh 21',
+  bpjs_base     TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '1 = masuk dasar iuran BPJS',
+  is_active     TINYINT(1)    NOT NULL DEFAULT 1,
+  sort_order    INT           NOT NULL DEFAULT 100,
+  created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payroll_components_code (code),
+  KEY ix_payroll_components_type (type, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 20b. Gaji pokok & pengaturan payroll per karyawan
+CREATE TABLE IF NOT EXISTS payroll_employee_salary (
+  employee_id   INT UNSIGNED  NOT NULL,
+  base_salary   DECIMAL(14,2) NOT NULL DEFAULT 0,
+  payroll_enabled TINYINT(1)  NOT NULL DEFAULT 1 COMMENT '0 = dikecualikan dari payroll massal',
+  effective_date DATE          NULL,
+  note          VARCHAR(255)  NULL,
+  updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (employee_id),
+  CONSTRAINT fk_payroll_salary_employee FOREIGN KEY (employee_id) REFERENCES employees (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 20c. Override komponen per karyawan (nominal/persen berbeda dari master)
+CREATE TABLE IF NOT EXISTS payroll_employee_components (
+  id            INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  employee_id   INT UNSIGNED  NOT NULL,
+  component_id  INT UNSIGNED  NOT NULL,
+  amount        DECIMAL(14,2) NULL COMMENT 'override nominal (NULL = pakai master)',
+  percent       DECIMAL(7,4)  NULL COMMENT 'override persen (NULL = pakai master)',
+  is_active     TINYINT(1)    NULL COMMENT 'override aktif (NULL = pakai master)',
+  rule_json     JSON          NULL COMMENT 'override aturan absensi/lembur',
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payroll_emp_component (employee_id, component_id),
+  CONSTRAINT fk_payroll_empc_employee  FOREIGN KEY (employee_id)  REFERENCES employees          (id) ON DELETE CASCADE,
+  CONSTRAINT fk_payroll_empc_component FOREIGN KEY (component_id) REFERENCES payroll_components (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 20d. Periode payroll bulanan (satu periode = satu bulan, satu status)
+CREATE TABLE IF NOT EXISTS payroll_periods (
+  id            INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  period_year   SMALLINT      NOT NULL,
+  period_month  TINYINT       NOT NULL COMMENT '1-12',
+  label         VARCHAR(60)   NULL,
+  start_date    DATE          NOT NULL,
+  end_date      DATE          NOT NULL,
+  status        ENUM('draft','approved','paid') NOT NULL DEFAULT 'draft',
+  note          VARCHAR(500)  NULL,
+  created_by    INT UNSIGNED  NULL,
+  approved_by   INT UNSIGNED  NULL,
+  approved_at   DATETIME      NULL,
+  paid_at       DATETIME      NULL,
+  created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payroll_period (period_year, period_month),
+  KEY ix_payroll_period_status (status),
+  CONSTRAINT fk_payroll_period_creator  FOREIGN KEY (created_by)  REFERENCES app_users (id) ON DELETE SET NULL,
+  CONSTRAINT fk_payroll_period_approver FOREIGN KEY (approved_by) REFERENCES app_users (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 20e. Hasil payroll per karyawan per periode (dikunci setelah approved)
+CREATE TABLE IF NOT EXISTS payroll_items (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  period_id       INT UNSIGNED  NOT NULL,
+  employee_id     INT UNSIGNED  NOT NULL,
+  employee_code   VARCHAR(30)   NOT NULL COMMENT 'snapshot saat hitung',
+  employee_name   VARCHAR(120)  NOT NULL,
+  department_name VARCHAR(100)  NULL,
+  position_name   VARCHAR(100)  NULL,
+  status          ENUM('draft','approved','paid') NOT NULL DEFAULT 'draft',
+  base_salary     DECIMAL(14,2) NOT NULL DEFAULT 0,
+  total_earning   DECIMAL(14,2) NOT NULL DEFAULT 0,
+  total_deduction DECIMAL(14,2) NOT NULL DEFAULT 0,
+  total_company   DECIMAL(14,2) NOT NULL DEFAULT 0 COMMENT 'beban perusahaan (info biaya)',
+  net_salary      DECIMAL(14,2) NOT NULL DEFAULT 0,
+  taxable_base    DECIMAL(14,2) NOT NULL DEFAULT 0,
+  bpjs_base       DECIMAL(14,2) NOT NULL DEFAULT 0,
+  days_work       SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  days_present    SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  days_late       SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  days_absent     SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  days_leave      SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  late_minutes    INT UNSIGNED  NOT NULL DEFAULT 0,
+  overtime_minutes INT UNSIGNED NOT NULL DEFAULT 0,
+  generated_at    DATETIME      NULL,
+  calculated_by   INT UNSIGNED  NULL,
+  note            VARCHAR(500)  NULL,
+  created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payroll_item (period_id, employee_id),
+  KEY ix_payroll_item_employee (employee_id),
+  CONSTRAINT fk_payroll_item_period   FOREIGN KEY (period_id)   REFERENCES payroll_periods (id) ON DELETE CASCADE,
+  CONSTRAINT fk_payroll_item_employee FOREIGN KEY (employee_id) REFERENCES employees       (id) ON DELETE CASCADE,
+  CONSTRAINT fk_payroll_item_actor    FOREIGN KEY (calculated_by) REFERENCES app_users     (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 20f. Rincian baris komponen hasil perhitungan (snapshot, aman bila master berubah)
+CREATE TABLE IF NOT EXISTS payroll_item_lines (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  item_id       BIGINT UNSIGNED NOT NULL,
+  component_id  INT UNSIGNED  NULL,
+  component_code VARCHAR(30)  NOT NULL,
+  component_name VARCHAR(100) NOT NULL,
+  type          ENUM('penghasilan','potongan','beban_perusahaan') NOT NULL,
+  calc_method   VARCHAR(20)   NOT NULL DEFAULT 'tetap',
+  base_amount   DECIMAL(14,2) NOT NULL DEFAULT 0 COMMENT 'dasar hitung (mis. gaji pokok)',
+  percent       DECIMAL(7,4)  NULL,
+  amount        DECIMAL(14,2) NOT NULL DEFAULT 0 COMMENT 'hasil akhir',
+  taxable       TINYINT(1)    NOT NULL DEFAULT 0 COMMENT 'snapshot: 1 = masuk dasar PPh',
+  bpjs_base     TINYINT(1)    NOT NULL DEFAULT 0 COMMENT 'snapshot: 1 = masuk dasar iuran BPJS',
+  detail        VARCHAR(255)  NULL COMMENT 'keterangan, mis. 22 hari hadir x 20.000',
+  sort_order    INT           NOT NULL DEFAULT 100,
+  PRIMARY KEY (id),
+  KEY ix_payroll_line_item (item_id),
+  CONSTRAINT fk_payroll_line_item      FOREIGN KEY (item_id)      REFERENCES payroll_items      (id) ON DELETE CASCADE,
+  CONSTRAINT fk_payroll_line_component FOREIGN KEY (component_id) REFERENCES payroll_components (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 20g. Riwayat perubahan payroll (audit khusus, tampil di halaman detail)
+CREATE TABLE IF NOT EXISTS payroll_audit (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  period_id   INT UNSIGNED  NULL,
+  item_id     BIGINT UNSIGNED NULL,
+  employee_id INT UNSIGNED  NULL,
+  action      VARCHAR(40)   NOT NULL COMMENT 'period.create/item.calc/item.edit/period.approve/period.pay',
+  detail      TEXT          NULL,
+  actor_id    INT UNSIGNED  NULL,
+  ip_address  VARCHAR(45)   NULL,
+  created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_payroll_audit_period (period_id, created_at),
+  KEY ix_payroll_audit_item (item_id, created_at),
+  CONSTRAINT fk_payroll_audit_period   FOREIGN KEY (period_id)   REFERENCES payroll_periods (id) ON DELETE SET NULL,
+  CONSTRAINT fk_payroll_audit_item     FOREIGN KEY (item_id)     REFERENCES payroll_items   (id) ON DELETE SET NULL,
+  CONSTRAINT fk_payroll_audit_employee FOREIGN KEY (employee_id) REFERENCES employees       (id) ON DELETE SET NULL,
+  CONSTRAINT fk_payroll_audit_actor    FOREIGN KEY (actor_id)    REFERENCES app_users       (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 DEALLOCATE PREPARE stmt;

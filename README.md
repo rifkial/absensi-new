@@ -7,7 +7,10 @@ Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 ## Fitur
 
 - Karyawan, departemen, jabatan, shift, jadwal (versi UI 1.2.0 di sidebar + Status Sistem)
+- Shift bervariasi per hari: override jam per hari kerja (mis. Sabtu pulang 15:30 untuk shift non-satpam) lewat `shifts.day_times`
 - Menu "Unit Kerja & Jabatan": data master divisi/departemen + jabatan (CRUD, kode unik)
+- Payroll: komponen gaji fleksibel (penghasilan/potongan/beban perusahaan), gaji pokok per karyawan, periode bulanan, hitung otomatis dari data absensi, koreksi, sahkan & kunci, slip gaji cetak/PDF (terbilang), ekspor Excel/CSV
+- Mesin fingerprint katalog "Fingerspot All Series" (semua seri Fingerspot, kompatibel ZKTeco)
 - Absensi: statistik dinas luar/dalam terpisah; Dashboard: Hadir bersih, kartu Dinas sendiri, status kanal notif asli
 - Tarik log dari mesin (polling TCP 4370) + mode PUSH (ADMS/icLock) + impor CSV
 - Rekap harian/bulanan, telat, lembur, izin/sakit/cuti, dinas dalam/luar, alpa, hari libur
@@ -37,15 +40,15 @@ src/server.js        # entry: 2 listener (web 3000 + PUSH 3001) + scheduler sync
 src/app.js           # Express app, REST API, static frontend, proxy geo (tile/search)
 src/config.js        # baca .env
 src/db/              # pool, migrate, seed, upgrades
-src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim), master (unit kerja & jabatan), backup (admin)
-src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels, whatsappSelf (QR + antrean), backup (dump .sql)
+src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim), master (unit kerja & jabatan), backup (admin), payroll
+src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels, whatsappSelf (QR + antrean), backup (dump .sql), payroll (periode/hitung/slip/audit), payrollCalc (hitungan murni), payrollMoney (rupiah + terbilang), payrollDefaults (14 komponen bawaan)
 src/devices/         # adapter: zkteco-tcp, pushhttp, csv
 src/middleware/      # auth (RBAC + cache user 30s), error
 db/schema.sql        # skema idempoten
 public/              # UI statis (index.html, css/, js/core+app+pages/, vendor/leaflet)
 public/vendor/leaflet/ # Leaflet lokal (tanpa CDN luar)
 tools/               # probe, scan, sync-once, cek-*
-test/                # node:test (127 tes: shifts, attendance, travelLetter, realtime, dutyRange, whatsappThrottle, backup, ...)
+test/                # node:test (145 tes: shifts, attendance, travelLetter, realtime, dutyRange, whatsappThrottle, backup, payroll, ...)
 ```
 
 ## Syarat
@@ -112,7 +115,7 @@ Salin `.env.example` ke `.env`. Kunci penting:
 | `npm run sync` | satu siklus sync lalu keluar (`--force`, `--days N`, `--device ID`) |
 | `npm run probe -- <ip> [port] [pass]` | tes koneksi ke satu mesin |
 | `npm run scan -- [prefix]` | pindai subnet cari mesin (contoh `192.168.1`) |
-| `npm test` / `npm run build` | `node --test test/**/*.test.js` (127 tes) |
+| `npm test` / `npm run build` | `node --test test/**/*.test.js` (145 tes) |
 | `npm run lint` | eslint (butuh `eslint.config.js`, lihat migrasi ESLint v9) |
 
 ## Peran & izin
@@ -125,7 +128,10 @@ Role: `admin`, `hr`, `operator`, `viewer`, `employee`.
 - `reports:read/export`, `attendance:read` = semua role login
 - `settings`, `notify:send`, `audit:read`, `users:manage` = admin, hr
 - `backup:manage` = admin saja (tab Pengaturan > Backup)
-- `employee` = hanya data sendiri via `/api/me` + portal mandiri
+- `payroll:read` = admin, hr (daftar periode, komponen, gaji karyawan, detail, slip)
+- `payroll:write` = admin, hr (buat periode, hitung, koreksi, komponen, gaji karyawan)
+- `payroll:approve` = admin (sahkan, bayar, buka kunci)
+- `employee` = hanya data sendiri via `/api/me` + portal mandiri (termasuk slip gaji sendiri)
 
 ## Mesin fingerprint
 
@@ -165,6 +171,30 @@ Untuk mode PUSH, isi IP server + `PUSH_PORT` di menu ADMS mesin. Bila `PUSH_AUTH
 - Dinas yang disetujui bisa dilengkapi transportasi + nomor surat (`PUT /api/employees/leaves/:id/travel`), lalu cetak Surat Perjalanan Dinas (`GET /api/employees/leaves/:id/travel-letter`). Tombol "Surat Dinas" / "Cetak Surat Dinas" muncul otomatis di riwayat + detail.
 - Karyawan (`role employee`) mengajukan via Portal Saya + check-in dinas GPS + selfie (wajib lokasi + foto, check-out wajib selfie).
 - GPS/kamera butuh secure context: di LAN `http://` browser memblokir geolokasi. Solusi: `chrome://flags > Insecure origins treated as secure > http://<ip-server>:3000 > Enabled > Relaunch`, atau pakai HTTPS. Fallback: isi Lat/Lng manual + upload file + peta Leaflet lokal.
+
+## Payroll / Penggajian
+
+Menu **Payroll** (sidebar) untuk `admin`/`hr`, dengan 3 tab:
+
+- **Periode Payroll** — buat periode bulanan, hitung gaji, lihat rincian, koreksi, sahkan & kunci, tandai dibayar, ekspor Excel/CSV, riwayat perubahan. Filter status (draft/disetujui/dibayar) + tahun.
+- **Komponen Gaji** — master komponen: nama, kode, jenis (`penghasilan` / `potongan` / `beban_perusahaan`), metode hitung (`tetap`, `persen`, `manual`, `absensi`, `lembur`), nominal/persen, dasar persen (gaji pokok/bruto/tunjangan/dasar pajak), flag kena PPh 21 & dasar BPJS. `beban_perusahaan` tidak mengurangi gaji karyawan (hanya info biaya).
+- **Gaji Karyawan** — gaji pokok + status ikut payroll massal + override komponen per karyawan (nominal/persen berbeda dari master).
+
+Rumus: `Gaji Bersih = Total Penghasilan − Total Potongan`. Angka absensi (hari kerja, hadir, telat, alpa, izin/sakit/cuti, lembur) diambil apa adanya dari `attendance_daily` — tidak dihitung ulang. Tunjangan absensi & denda absensi mengikuti aturan (`rule_json`) yang diatur admin, bukan otomatis.
+
+Alur & keamanan:
+- Hitung payroll mengisi/menyegarkan item per karyawan. Periode `draft` bisa dikoreksi manual (nominal baris); total dihitung ulang otomatis.
+- **Sahkan & Kunci** mengubah status ke `approved`; setelah itu hitung ulang/koreksi ditolak. Perubahan hanya lewat **Buka Kunci** (kembali ke `draft`, tercatat di `payroll_audit`). Tandai **Dibayar** setelah disahkan.
+- Gaji ganda dicegah via `UNIQUE (period_id, employee_id)`.
+- Slip gaji: kop perusahaan, identitas karyawan, rincian penghasilan & potongan, beban perusahaan (info), penerimaan bersih + **terbilang** Bahasa Indonesia, penerima & penyetuju, cetak/PDF. Nilai slip = hasil payroll sah.
+- 14 komponen default di-seed (BPJS-TK 2%/3.7%, BPJS-Kes 1%/4%, PPh 21 0% — sesuaikan tarif di UI). Role `employee` hanya melihat slip miliknya di **Portal Saya**.
+
+## Shift & jam khusus per hari
+
+Shift menyimpan `day_times` (JSON) untuk override jam per hari kerja, mis. Sabtu pulang lebih awal:
+
+- Di form shift: centang "Sabtu pulang lebih awal" lalu isi jam masuk/pulang Sabtu (mis. `08:00–15:30`). Berlaku per shift, jadi shift satpam terpisah tidak terpengaruh.
+- Rekap otomatis memakai jam efektif hari itu (`shifts.forDate`) saat menghitung telat/lembur.
 
 ## Laporan
 
@@ -218,6 +248,19 @@ GET  /api/backup/download/:name                     # unduh .sql (admin)
 POST /api/backup/upload (file)                      # upload .sql ke server (admin)
 POST /api/backup/restore {name|file, confirm}       # restore, confirm = nama DB persis (admin)
 DELETE /api/backup/:name                            # hapus file server, pra-restore dilindungi (admin)
+GET  /api/payroll/periods                           # daftar periode (filter ?status=&year=) (payroll:read)
+POST /api/payroll/periods                            # buat periode {period_year, period_month} (payroll:write)
+GET  /api/payroll/periods/:id                       # detail periode + items + ringkasan
+POST /api/payroll/periods/:id/calc                   # hitung payroll {employee_ids?} (payroll:write)
+POST /api/payroll/periods/:id/approve | /pay | /reopen   # sahkan/bayar/buka kunci (payroll:approve, admin)
+GET  /api/payroll/periods/:id/audit                 # riwayat perubahan periode
+GET  /api/payroll/periods/:id/eligible              # karyawan layak + absensi periode
+GET  /api/payroll/periods/:id/export/excel | /csv   # rekap payroll
+GET|POST|PUT|DELETE /api/payroll/components[/:id]   # master komponen gaji
+GET  /api/payroll/employees | /:id                  # gaji pokok + komponen efektif karyawan
+PUT  /api/payroll/employees/:id/salary              # {base_salary, payroll_enabled}
+GET|PUT /api/payroll/items/:id[/slip]               # koreksi baris (draft) + data slip
+GET  /api/payroll/slips/mine | /payroll/slip/:id    # slip milik sendiri (role employee)
 GET  /api/notifications/stream?token=               # SSE (1 koneksi per user, lama ditutup otomatis)
 GET  /api/geo/tiles/{z}/{x}/{y}.png, /api/geo/search?q=
 GET  /api/attendance, /api/reports/preview, /api/audit, /api/me
@@ -242,7 +285,7 @@ Form karyawan membaca daftar ini dari `/api/auth/meta` dan **memuat ulang setiap
 
 | Perintah | Fungsi |
 |---|---|
-| `npm run seed` | Admin + 5 karyawan demo + shift/jadwal contoh (idempoten) |
+| `npm run seed` | Admin + 5 karyawan demo + shift/jadwal contoh + 14 komponen gaji payroll (idempoten) |
 | `node tools/seed-oktober.js` | Data dummy kehadiran 1–7 Oktober 2026: scan mentah mengikuti shift masing-masing karyawan (PAGI/SIANG/MALAM/FLEK), variasi telat/lembur/alpa, pengajuan izin/sakit/cuti/dinas, lalu rekap dihitung ulang. Idempoten — baris lama di periode yang sama dibersihkan dulu. |
 
 Catatan seeder Oktober:

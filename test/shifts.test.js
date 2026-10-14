@@ -16,6 +16,8 @@ const {
   toleranceOf,
   shiftDurationMinutes,
   maxWorkMinutesOf,
+  parseDayTimes,
+  forDate,
 } = require('../src/services/shifts');
 
 const PAGI = {
@@ -96,4 +98,31 @@ test('isOvernight mendeteksi shift malam lintas hari', () => {
   assert.equal(isOvernight({ start_time: '07:00:00', end_time: '15:00:00' }), false);
   assert.equal(isOvernight({ start_time: '15:00:00', end_time: '23:00:00' }), false);
   assert.equal(isOvernight(null), false);
+});
+
+test('forDate memakai override jam khusus Sabtu', () => {
+  const shift = {
+    start_time: '08:00:00',
+    end_time: '17:00:00',
+    work_days: '1,2,3,4,5,6',
+    day_times: JSON.stringify({ 6: { start: '08:00', end: '15:30' } }),
+  };
+  // 2026-10-17 = Sabtu, 2026-10-19 = Senin.
+  const sabtu = forDate(shift, '2026-10-17');
+  assert.equal(String(sabtu.end_time).slice(0, 5), '15:30');
+  const senin = forDate(shift, '2026-10-19');
+  assert.equal(String(senin.end_time).slice(0, 5), '17:00');
+});
+
+test('forDate tanpa day_times mengembalikan shift asli', () => {
+  assert.equal(forDate({ start_time: '08:00:00', end_time: '17:00:00' }, '2026-10-17').end_time, '17:00:00');
+  assert.equal(forDate(null, '2026-10-17'), null);
+});
+
+test('parseDayTimes membuang jam tidak valid', () => {
+  assert.deepEqual(parseDayTimes(null), {});
+  assert.deepEqual(parseDayTimes('bukan-json'), {});
+  const parsed = parseDayTimes({ 6: { start: '08:00', end: '15:30' }, 9: { start: 'xx' } });
+  assert.ok(parsed[6]);
+  assert.equal(parsed[9], undefined);
 });

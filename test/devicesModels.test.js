@@ -13,11 +13,11 @@ const assert = require('node:assert/strict');
 const { listModels, defaultPort } = require('../src/devices/models');
 const { hasAdapter } = require('../src/devices');
 
-test('katalog memuat Fingerspot Revo W-202BNC', () => {
-  const model = listModels().find((m) => m.id === 'fingerspot-revo-w-202bnc');
-  assert.ok(model, 'model Revo W-202BNC harus ada di katalog');
+test('katalog memuat Fingerspot All Series', () => {
+  const model = listModels().find((m) => m.id === 'fingerspot-all-series');
+  assert.ok(model, 'model Fingerspot All Series harus ada di katalog');
   assert.equal(model.brand, 'Fingerspot');
-  assert.equal(model.model, 'Revo W-202BNC');
+  assert.equal(model.model, 'All Series');
   assert.equal(model.protocol, 'zkteco-tcp');
   assert.equal(model.port, 4370);
 });

@@ -125,6 +125,7 @@
       '<div id="empDutyCard" class="card"></div>' +
       '<div id="empLeaveCard" class="card"></div>' +
       '<div id="empReimburseCard" class="card"></div>' +
+      '<div id="empPayrollCard" class="card"></div>' +
       '<div id="empRecapCard" class="card"></div>';
 
     loadProfile();
@@ -133,6 +134,7 @@
     loadDuty();
     loadLeaves();
     loadReimburses();
+    loadPayroll();
     loadRecap();
 
     if (!el._notifBound) {
@@ -146,6 +148,113 @@
         loadRecap();
       });
     }
+  }
+
+  // -------------------------------------------------------- Slip gaji saya
+
+  /** Kartu slip gaji milik sendiri (hanya periode yang sudah dihitung). */
+  function loadPayroll() {
+    var el = document.getElementById('empPayrollCard');
+    if (!el) return;
+
+    el.innerHTML = '<div class="card-body">' + App.loading('Memuat slip gaji...') + '</div>';
+
+    api.get('/payroll/slips/mine')
+      .then(function (res) {
+        var rows = res.data || [];
+        var statusBadge = function (s) {
+          var cls = s === 'paid' ? 'hadir' : (s === 'approved' ? 'izin' : 'belum');
+          var label = s === 'paid' ? 'Dibayar' : (s === 'approved' ? 'Disetujui' : 'Draft');
+          return '<span class="badge ' + cls + '">' + esc(label) + '</span>';
+        };
+        var columns = [
+          { key: 'label', label: 'Periode', render: function (r) { return '<strong>' + esc(r.label || '') + '</strong>'; } },
+          { key: 'net_salary', label: 'Gaji Bersih', align: 'right', render: function (r) {
+            return '<strong>Rp ' + App.fmtNumber(r.net_salary) + '</strong>';
+          } },
+          { key: 'status', label: 'Status', render: function (r) { return statusBadge(r.status); } },
+          { key: 'aksi', label: '', width: '90px', render: function (r) {
+            return '<button class="btn sm" data-slip="' + r.id + '">Slip</button>';
+          } },
+        ];
+        el.innerHTML =
+          '<div class="card-header"><h2 class="card-title">Slip Gaji Saya</h2>' +
+            '<span class="small faint">Hanya slip Anda sendiri</span></div>' +
+          '<div class="card-body tight">' + App.table(columns, rows, { empty: 'Belum ada slip gaji.' }) + '</div>';
+
+        el.querySelectorAll('button[data-slip]').forEach(function (b) {
+          b.addEventListener('click', function () {
+            api.get('/payroll/slip/' + b.getAttribute('data-slip'))
+              .then(function (sr) { showMySlip(sr.data); })
+              .catch(function (err) { App.toast(err.message, 'error'); });
+          });
+        });
+      })
+      .catch(function (err) {
+        // Role admin tanpa employee_id memang ditolak; sembunyikan kartu saja.
+        if (err && (err.status === 400 || err.status === 403)) { el.innerHTML = ''; return; }
+        el.innerHTML = errorBlock('Gagal memuat slip gaji', err);
+      });
+  }
+
+  function showMySlip(s) {
+    var earn = (s.earnings || []).map(function (l) {
+      return '<tr><td>' + esc(l.component_name) + '</td><td class="num">Rp ' + App.fmtNumber(l.amount) + '</td></tr>';
+    }).join('');
+    var ded = (s.deductions || []).map(function (l) {
+      return '<tr><td>' + esc(l.component_name) + '</td><td class="num">Rp ' + App.fmtNumber(l.amount) + '</td></tr>';
+    }).join('');
+    var co = (s.company_costs || []).map(function (l) {
+      return '<tr><td>' + esc(l.component_name) + '</td><td class="num">Rp ' + App.fmtNumber(l.amount) + '</td></tr>';
+    }).join('');
+
+    App.modal({
+      title: 'Slip Gaji - ' + s.period.label,
+      size: 'large',
+      bodyHtml:
+        '<div class="callout">NIK: <strong>' + esc(s.employee.employee_code) + '</strong> · Nama: <strong>' +
+          esc(s.employee.name) + '</strong> · Hari kerja: ' + esc(String(s.attendance.days_work)) + '</div>' +
+        '<div class="grid-2">' +
+          '<div><h4>Penghasilan</h4><div class="table-wrap"><table><tbody>' + earn +
+            '<tr><td><strong>Total (A)</strong></td><td class="num"><strong>Rp ' + App.fmtNumber(s.totals.total_earning) + '</strong></td></tr>' +
+          '</tbody></table></div></div>' +
+          '<div><h4>Potongan</h4><div class="table-wrap"><table><tbody>' + ded +
+            '<tr><td><strong>Total (B)</strong></td><td class="num"><strong>Rp ' + App.fmtNumber(s.totals.total_deduction) + '</strong></td></tr>' +
+          '</tbody></table></div>' +
+          (co ? '<h4 style="margin-top:12px">Beban Perusahaan (info)</h4><div class="table-wrap"><table><tbody>' + co + '</tbody></table></div>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="callout success" style="margin-top:12px"><strong>Bersih (A - B): Rp ' + App.fmtNumber(s.totals.net_salary) + '</strong><br>' +
+          '<span class="small">Terbilang: ' + esc(s.net_words) + '</span></div>',
+      actions: [
+        { label: 'Tutup' },
+        { label: 'Cetak / PDF', className: 'primary', onClick: function () {
+          var w = window.open('', '_blank', 'width=900,height=1000');
+          if (!w) { App.toast('Popup diblokir browser.', 'error'); return false; }
+          w.document.write(
+            '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><title>Slip Gaji</title>' +
+            '<style>body{font-family:Arial,sans-serif;margin:28px;font-size:12px;color:#111}' +
+            'h2{margin:0;color:#1e3a5f}table{width:100%;border-collapse:collapse;margin-top:6px}' +
+            'td{padding:4px 6px;border-bottom:1px solid #ddd}.num{text-align:right}' +
+            '.net{font-size:15px;font-weight:700;border-top:3px double #1e3a5f;margin-top:14px;padding-top:8px}' +
+            '@media print{.noprint{display:none}}</style></head><body>' +
+            '<h2>SLIP GAJI KARYAWAN</h2><div>' + esc(s.company.name) + ' · Periode: ' + esc(s.period.label) + '</div>' +
+            '<div>NIK: ' + esc(s.employee.employee_code) + ' · Nama: ' + esc(s.employee.name) + '</div>' +
+            '<div>Hari kerja: ' + esc(String(s.attendance.days_work)) + ' · Status: ' + esc(s.period.status) + '</div>' +
+            '<h3>Penghasilan</h3><table>' + earn + '</table>' +
+            '<h3>Potongan</h3><table>' + ded + '</table>' +
+            (co ? '<h3>Beban Perusahaan (info)</h3><table>' + co + '</table>' : '') +
+            '<div class="net">Bersih (A - B): Rp ' + App.fmtNumber(s.totals.net_salary) +
+              '<div style="font-size:12px;font-weight:400;font-style:italic">Terbilang: ' + esc(s.net_words) + '</div></div>' +
+            '<div class="noprint" style="margin-top:20px;text-align:center"><button onclick="window.print()">Cetak / Simpan PDF</button></div>' +
+            '</body></html>'
+          );
+          w.document.close();
+          w.focus();
+          return false;
+        } },
+      ],
+    });
   }
 
   // ------------------------------------------------------------------ Profil

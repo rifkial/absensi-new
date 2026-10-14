@@ -240,6 +240,11 @@ async function seed() {
   }
   console.log(`[seed] ${Object.keys(SETTINGS).length} pengaturan dasar siap.`);
 
+  // 6b) Komponen gaji default (payroll)
+  const payroll = require('../services/payroll');
+  const seededComponents = await payroll.ensureDefaultComponents();
+  console.log(seededComponents ? '[seed] Komponen gaji default dibuat.' : '[seed] Komponen gaji sudah ada, dilewati.');
+
   // 7) Ringkasan
   const summary = await db.queryOne(
     `SELECT
@@ -248,7 +253,8 @@ async function seed() {
        (SELECT COUNT(*) FROM positions) AS positions,
        (SELECT COUNT(*) FROM shifts) AS shifts,
        (SELECT COUNT(*) FROM employees) AS employees,
-       (SELECT COUNT(*) FROM devices) AS devices`
+       (SELECT COUNT(*) FROM devices) AS devices,
+       (SELECT COUNT(*) FROM payroll_components) AS payroll_components`
   );
 
   console.log('[seed] Ringkasan:');

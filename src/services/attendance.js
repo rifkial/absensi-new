@@ -152,6 +152,9 @@ async function resolveShift(employeeId, workDate) {
     if (shift) source = 'global';
   }
 
+  // Timpa jam dengan override per-hari (mis. Sabtu pulang 15:30) bila ada.
+  if (shift) shift = shiftsService.forDate(shift, workDate);
+
   return {
     // Jadwal per tanggal (bila ada) menggantikan shift default karyawan.
     dayType: row.day_type || null,

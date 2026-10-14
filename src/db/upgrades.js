@@ -219,6 +219,17 @@ async function upgradeEmployees(conn) {
  * jadi migrate hanya MEMBERITAKAN baris bermasalah lewat log, tanpa mengubah
  * data diam-diam.
  */
+async function upgradeShiftsDayTimes(conn) {
+  if (!(await tableExists(conn, 'shifts'))) return;
+  if (await columnExists(conn, 'shifts', 'day_times')) return;
+  await conn.query(
+    'ALTER TABLE `shifts` ADD COLUMN `day_times` TEXT NULL ' +
+    "COMMENT 'override jam per hari (JSON): {\"6\":{\"start\":\"08:00\",\"end\":\"15:30\"}}. kosong = pakai jam utama' " +
+    'AFTER `work_days`'
+  );
+  changes.push('shifts.day_times');
+}
+
 async function auditShiftWorkDays(conn) {
   if (!(await tableExists(conn, 'shifts'))) return;
 
@@ -297,6 +308,22 @@ async function upgradeLeaveQuotaLogs(conn) {
   }
 }
 
+async function upgradePayrollLines(conn) {
+  if (!(await tableExists(conn, 'payroll_item_lines'))) return;
+  if (!(await columnExists(conn, 'payroll_item_lines', 'taxable'))) {
+    await conn.query(
+      'ALTER TABLE `payroll_item_lines` ADD COLUMN `taxable` TINYINT(1) NOT NULL DEFAULT 0 AFTER `amount`'
+    );
+    changes.push('payroll_item_lines.taxable');
+  }
+  if (!(await columnExists(conn, 'payroll_item_lines', 'bpjs_base'))) {
+    await conn.query(
+      'ALTER TABLE `payroll_item_lines` ADD COLUMN `bpjs_base` TINYINT(1) NOT NULL DEFAULT 0 AFTER `taxable`'
+    );
+    changes.push('payroll_item_lines.bpjs_base');
+  }
+}
+
 /**
  * Terapkan seluruh upgrade. Wajib dipanggil SESUDAH `USE <database>` dan
  * SEBELUM schema.sql dieksekusi (schema.sql menambahkan FK di akhir).
@@ -309,6 +336,8 @@ async function applyUpgrades(conn) {
   await upgradeDutyCheckins(conn);
   await upgradeNotifications(conn);
   await upgradeAttendanceDaily(conn);
+  await upgradeShiftsDayTimes(conn);
+  await upgradePayrollLines(conn);
   await auditShiftWorkDays(conn);
 
   if (changes.length > 0) {

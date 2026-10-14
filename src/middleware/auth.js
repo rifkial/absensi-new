@@ -34,6 +34,11 @@ const PERMISSIONS = {
   'attendance:write': ['admin', 'hr', 'operator'],
   'reports:read': ['admin', 'hr', 'operator', 'viewer'],
   'reports:export': ['admin', 'hr', 'operator', 'viewer'],
+  // Payroll sangat sensitif: hanya admin & HR yang boleh melihat/mengubah.
+  // Persetujuan (mengunci) periode hanya admin.
+  'payroll:read': ['admin', 'hr'],
+  'payroll:write': ['admin', 'hr'],
+  'payroll:approve': ['admin'],
   'users:manage': ['admin'],
   'settings:read': ['admin', 'hr'],
   'settings:write': ['admin'],

@@ -77,7 +77,20 @@
       { key: 'late_tolerance_min', label: 'Toleransi Telat', align: 'right', render: function (r) {
         return r.late_tolerance_min + ' menit';
       } },
-      { key: 'work_days', label: 'Hari Kerja', render: function (r) { return esc(workDaysLabel(r.work_days)); } },
+      { key: 'work_days', label: 'Hari Kerja', render: function (r) {
+        var html = esc(workDaysLabel(r.work_days));
+        var dt = parseDayTimes(r.day_times);
+        var keys = Object.keys(dt);
+        if (keys.length > 0) {
+          var parts = keys.map(function (k) {
+            var e = dt[k];
+            var name = WORK_DAY_NAMES[Number(k) - 1] || k;
+            return name.slice(0, 3) + ' ' + (e.start || '') + (e.end ? '-' + e.end : '');
+          });
+          html += '<div class="small faint">khusus: ' + esc(parts.join(', ')) + '</div>';
+        }
+        return html;
+      } },
       { key: 'is_active', label: 'Status', render: function (r) {
         return Number(r.is_active) === 1
           ? '<span class="badge success">Aktif</span>'
@@ -109,8 +122,7 @@
   }
 
   function workDaysLabel(value) {
-    var days = String(value || '').split(',').map(function (d) { return Number(d.trim()); });
-    var names = [];
+    var days = String(value || '').split(',').map(function (d) { return Number(d.trim()); });    var names = [];
     var invalid = [];
     for (var i = 0; i < days.length; i += 1) {
       if (days[i] >= 1 && days[i] <= 7) names.push(WORK_DAY_NAMES[days[i] - 1].slice(0, 3));
@@ -234,11 +246,21 @@
 
   // ---------------------------------------------------------------- Form shift
 
+  function parseDayTimes(raw) {
+    if (!raw) return {};
+    var obj = raw;
+    if (typeof raw === 'string') {
+      try { obj = JSON.parse(raw); } catch (e) { return {}; }
+    }
+    return (obj && typeof obj === 'object') ? obj : {};
+  }
+
   function openForm(shift) {
     var isEdit = Boolean(shift);
     var days = shift ? String(shift.work_days || '').split(',').map(Number) : [1, 2, 3, 4, 5];
     var checkedDays = {};
     days.forEach(function (d) { checkedDays[d] = true; });
+    var dayTimes = parseDayTimes(shift && shift.day_times);
 
     App.modal({
       title: isEdit ? 'Ubah Shift: ' + shift.name : 'Tambah Shift',
@@ -280,7 +302,20 @@
         '<div class="field checkbox">' +
           '<input type="checkbox" id="sfActive"' + (!isEdit || Number(shift.is_active) === 1 ? ' checked' : '') + '>' +
           '<label for="sfActive">Shift aktif</label>' +
-        '</div>',
+        '</div>' +
+        '<div class="divider"></div>' +
+        '<h4 style="margin:0 0 8px">Jam Khusus Sabtu <span class="small faint">(opsional)</span></h4>' +
+        '<div class="row" style="align-items:flex-end;gap:12px;flex-wrap:wrap">' +
+          '<div class="field checkbox">' +
+            '<input type="checkbox" id="sfSatUse"' + (dayTimes[6] ? ' checked' : '') + '>' +
+            '<label for="sfSatUse">Sabtu pulang lebih awal</label>' +
+          '</div>' +
+          '<div class="field"><label>Masuk Sabtu</label>' +
+            '<input type="time" id="sfSatStart" value="' + esc(dayTimes[6] && dayTimes[6].start ? dayTimes[6].start : '08:00') + '"></div>' +
+          '<div class="field"><label>Pulang Sabtu</label>' +
+            '<input type="time" id="sfSatEnd" value="' + esc(dayTimes[6] && dayTimes[6].end ? dayTimes[6].end : '15:30') + '"></div>' +
+        '</div>' +
+        '<span class="help">Contoh: shift kantor Sabtu 08:00 - 15:30. Kosongkan (uncheck) bila Sabtu ikut jam utama. Shift satpam yang terpisah tidak terpengaruh.</span>',
 
       actions: [
         { label: 'Batal' },
@@ -310,6 +345,14 @@
             var daysValue = [];
             workDays.forEach(function (cb) { daysValue.push(Number(cb.value)); });
 
+            var dayTimes = {};
+            if (el.querySelector('#sfSatUse').checked) {
+              var satStart = el.querySelector('#sfSatStart').value;
+              var satEnd = el.querySelector('#sfSatEnd').value;
+              if (!satStart || !satEnd) { App.toast('Jam khusus Sabtu harus diisi bila diaktifkan.', 'error'); return false; }
+              dayTimes[6] = { start: satStart, end: satEnd };
+            }
+
             var payload = {
               code: code,
               name: name,
@@ -320,6 +363,7 @@
               late_tolerance_min: Number(el.querySelector('#sfLate').value) || 0,
               max_work_minutes: Number(el.querySelector('#sfMaxWork').value) || 600,
               work_days: daysValue.slice().sort(function (a, b) { return a - b; }).join(','),
+              day_times: dayTimes,
               is_active: el.querySelector('#sfActive').checked ? 1 : 0,
             };
 

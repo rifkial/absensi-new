@@ -21,23 +21,23 @@ const MODELS = [
     notes: 'Pilih ini bila model mesin tidak ada di daftar. Protokol biner ZKTeco port 4370.',
   },
   {
-    id: 'fingerspot-revo-w-202bnc',
+    id: 'fingerspot-all-series',
     brand: 'Fingerspot',
-    model: 'Revo W-202BNC',
+    model: 'All Series',
     protocol: 'zkteco-tcp',
     port: 4370,
     connection: 'WiFi / TCP/IP / USB / Flashdisk',
     notes:
-      'Mesin sidik jari + kartu RFID 125kHz. Bisa ditarik via TCP 4370 (kompatibel ZKTeco) ' +
-      'atau mode PUSH/ADMS ke server ini. Kapasitas 6.000 user, 12.000 sidik jari, 200.000 log.',
+      'Semua seri Fingerspot (Revo, Solution, X-Series, Neos, dsb) kompatibel ZKTeco. ' +
+      'Tarik via TCP 4370 atau mode PUSH/ADMS ke server ini.',
     also_supports: ['push-http'],
     // Panduan pengaturan di sisi MESIN (bukan di aplikasi ini).
     setup: [
       {
         title: 'Cara 1 - TCP/IP (direkomendasikan: server menarik data dari mesin)',
         steps: [
-          'Di mesin: Menu > Komunikasi (Comm) > Ethernet / Pengaturan Jaringan.',
-          'IP Address: 192.168.1.201 (satu subnet dengan server), Subnet Mask: 255.255.255.0, Gateway: 192.168.1.1.',
+          'Di mesin: Menu > Komunikasi (Comm) / Network > Ethernet / Pengaturan Jaringan.',
+          'IP Address: satu subnet dengan server (mis. 192.168.1.201), Subnet Mask: 255.255.255.0, Gateway: 192.168.1.1.',
           'Port / Comm Port: 4370 (biarkan default). Device ID: 1.',
           'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "ZKTeco TCP (port 4370)".',
         ],
@@ -45,7 +45,7 @@ const MODELS = [
       {
         title: 'Cara 2 - PUSH / ADMS (mesin yang mengirim log ke server)',
         steps: [
-          'Di mesin: Menu > Cloud Server / ADMS / Server Setting.',
+          'Di mesin: Menu > Cloud Server / ADMS / Server Setting (bila tersedia di seri ini).',
           'Server Address: IP komputer server ini, Server Port: 3001, Enable Domain Name: Off.',
           'Simpan, lalu restart mesin. Di aplikasi ini pilih protokol "PUSH HTTP (ADMS)" - SN terisi otomatis.',
         ],
@@ -62,7 +62,8 @@ const MODELS = [
         steps: [
           'Pilih salah satu mode saja (TCP atau PUSH), jangan dua-duanya sekaligus.',
           'Untuk mode PUSH, pastikan firewall server mengizinkan port 3001.',
-          'PIN karyawan di mesin (bisa sampai 22 digit) harus sama dengan kolom "PIN Mesin" di data karyawan.',
+          'PIN karyawan di mesin harus sama dengan kolom "PIN Mesin" di data karyawan.',
+          'Bila seri lama tanpa menu ADMS / Cloud, pakai Cara 1 (TCP) atau unduh log via USB lalu impor menu Impor File.',
         ],
       },
     ],

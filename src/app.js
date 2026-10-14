@@ -22,6 +22,7 @@ const whatsappRoutes = require('./routes/whatsapp');
 const backupRoutes = require('./routes/backup');
 const meRoutes = require('./routes/me');
 const masterRoutes = require('./routes/master');
+const payrollRoutes = require('./routes/payroll');
 
 /**
  * Aplikasi HTTP utama (port 3000).
@@ -160,6 +161,7 @@ function createApp() {
   app.use('/api/backup', backupRoutes);
   app.use('/api/me', meRoutes);
   app.use('/api/master', masterRoutes);
+  app.use('/api/payroll', payrollRoutes);
 
   // Frontend
   const publicDir = path.isAbsolute(config.server.publicDir)
