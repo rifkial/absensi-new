@@ -179,6 +179,17 @@ async function upgradeLeaveRequests(conn) {
   }
 }
 
+async function upgradeDevicesProtocol(conn) {
+  if (!(await tableExists(conn, 'devices'))) return;
+  await modifyColumnIfNeeded(
+    conn,
+    'devices',
+    'protocol',
+    "ENUM('zkteco-tcp','push-http','fkweb-http','csv') NOT NULL DEFAULT 'zkteco-tcp'",
+    "'fkweb-http'"
+  );
+}
+
 async function upgradeAttendanceDaily(conn) {
   if (!(await tableExists(conn, 'attendance_daily'))) return;
   await modifyColumnIfNeeded(
@@ -336,6 +347,7 @@ async function applyUpgrades(conn) {
   await upgradeLeaveQuotaLogs(conn);
   await upgradeDutyCheckins(conn);
   await upgradeNotifications(conn);
+  await upgradeDevicesProtocol(conn);
   await upgradeAttendanceDaily(conn);
   await upgradeShiftsDayTimes(conn);
   await upgradePayrollLines(conn);

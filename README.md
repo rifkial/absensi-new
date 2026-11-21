@@ -1,8 +1,8 @@
 # Absensi Fingerprint
 
-Aplikasi absensi fingerprint (Node.js + MySQL) dengan sinkronisasi mesin ZKTeco / PUSH.
+Aplikasi absensi fingerprint (Node.js + MySQL) dengan sinkronisasi mesin ZKTeco / PUSH / Fingerspot FkWeb.
 
-Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
+Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`, server FkWeb Fingerspot Revo di port `8013`.
 
 ## Fitur
 
@@ -10,9 +10,9 @@ Web UI + REST API di port `3000`, server PUSH/ADMS mesin di port `3001`.
 - Shift bervariasi per hari: override jam per hari kerja (mis. Sabtu pulang 15:30 untuk shift non-satpam) lewat `shifts.day_times`
 - Menu "Unit Kerja & Jabatan": data master divisi/departemen + jabatan (CRUD, kode unik)
 - Payroll: komponen gaji fleksibel (penghasilan/potongan/beban perusahaan), gaji pokok per karyawan, periode bulanan, hitung otomatis dari data absensi, koreksi, sahkan & kunci, slip gaji cetak/PDF (terbilang), ekspor Excel/CSV
-- Mesin fingerprint katalog "Fingerspot All Series" (semua seri Fingerspot, kompatibel ZKTeco)
+- Mesin fingerprint katalog "Fingerspot All Series" (semua seri Fingerspot, kompatibel ZKTeco) + preset "Fingerspot Revo WFV-208BNC+" (mode Internet/FkWeb)
 - Absensi: statistik dinas luar/dalam terpisah; Dashboard: Hadir bersih, kartu Dinas sendiri, status kanal notif asli
-- Tarik log dari mesin (polling TCP 4370) + mode PUSH (ADMS/icLock) + impor CSV
+- Tarik log dari mesin (polling TCP 4370) + mode PUSH (ADMS/icLock) + Fingerspot Revo mode Internet (FkWeb) + impor CSV
 - Rekap harian/bulanan, telat, lembur, izin/sakit/cuti, dinas dalam/luar, alpa, hari libur
 - Laporan 7 format + ekspor Excel + pratinjau pagination 50/halaman + cetak popup (kop + tabel saja)
 - Hari libur nasional (UI + sinkronisasi API) + Kalender & event 60 hari di Dashboard
@@ -43,13 +43,13 @@ src/config.js        # baca .env
 src/db/              # pool, migrate, seed, upgrades
 src/routes/          # auth, employees, shifts, holidays, devices, attendance, reports, settings, audit, me, notifications, whatsapp (self QR/status/kirim), master (unit kerja & jabatan), backup (admin), payroll
 src/services/        # attendance, reports, sync, notify, holidays, realtime (SSE), travelLetter, channels, whatsappSelf (QR + antrean), backup (dump .sql), payroll (periode/hitung/slip/audit), payrollCalc (hitungan murni), payrollMoney (rupiah + terbilang), payrollDefaults (14 komponen bawaan)
-src/devices/         # adapter: zkteco-tcp, pushhttp, csv
+src/devices/         # adapter: zkteco-tcp, pushhttp, fkweb, csv
 src/middleware/      # auth (RBAC + cache user 30s), error
 db/schema.sql        # skema idempoten
 public/              # UI statis (index.html, css/, js/core+app+pages/, vendor/leaflet)
 public/vendor/leaflet/ # Leaflet lokal (tanpa CDN luar)
 tools/               # probe, scan, sync-once, cek-*
-test/                # node:test (145 tes: shifts, attendance, travelLetter, realtime, dutyRange, whatsappThrottle, backup, payroll, ...)
+test/                # node:test (157 tes: shifts, attendance, fkweb, devices, backup, payroll, ...)
 ```
 
 ## Syarat
@@ -89,6 +89,7 @@ Salin `.env.example` ke `.env`. Kunci penting:
 |---|---|
 | `PORT` / `HOST` | web UI + API (default `3000` / `0.0.0.0`) |
 | `PUSH_PORT` | server ADMS mesin (default `3001`, samakan dengan `PORT` untuk gabung) |
+| `FKWEB_PORT` | server FkWeb Fingerspot Revo mode Internet (default `8013`) |
 | `DB_*` | host, port, user, password, nama DB (`DB_CONNECTION_LIMIT` default `20`) |
 | `JWT_SECRET` | wajib >= 32 karakter acak sebelum produksi |
 | `TZ` | `Asia/Jakarta` (penting untuk shift & telat) |
@@ -116,7 +117,7 @@ Salin `.env.example` ke `.env`. Kunci penting:
 | `npm run sync` | satu siklus sync lalu keluar (`--force`, `--days N`, `--device ID`) |
 | `npm run probe -- <ip> [port] [pass]` | tes koneksi ke satu mesin |
 | `npm run scan -- [prefix]` | pindai subnet cari mesin (contoh `192.168.1`) |
-| `npm test` / `npm run build` | `node --test test/**/*.test.js` (145 tes) |
+| `npm test` / `npm run build` | `node --test test/**/*.test.js` (157 tes) |
 | `npm run lint` | eslint (butuh `eslint.config.js`, lihat migrasi ESLint v9) |
 
 ## Peran & izin
@@ -139,7 +140,8 @@ Role: `admin`, `hr`, `operator`, `viewer`, `employee`.
 Protokol di `src/devices/`:
 
 - `zkteco-tcp` — tarik via TCP port 4370 (default)
-- `pushhttp` — mesin PUSH/ADMS ke `http://<ip-server>:3001/iclock/...`
+- `push-http` — mesin PUSH/ADMS ke `http://<ip-server>:3001/iclock/...`
+- `fkweb-http` — Fingerspot Revo mode Internet (FkWeb) ke `http://<ip-server>:8013/`
 - `csv` — impor file CSV
 
 Alur: daftarkan mesin di menu Perangkat → tes koneksi → sync manual (tombol Sync / `npm run sync`) atau nyalakan auto-sync via tombol di menu Perangkat (`POST /api/devices/scheduler {enabled:true}`). Auto-sync MATI default (`SYNC_ENABLED=false`) supaya UI tidak berebut pool DB. Sync manual jalan di background: server balas `202 queued` langsung, status dipolling via `GET /api/devices/status`. `device_user_id` (PIN mesin) harus cocok dengan data karyawan, yang tak cocok masuk log mentah `unmatched`.
@@ -153,6 +155,14 @@ npm run scan -- 192.168.1
 ```
 
 Untuk mode PUSH, isi IP server + `PUSH_PORT` di menu ADMS mesin. Bila `PUSH_AUTH_TOKEN` diisi, mesin wajib kirim token sama.
+
+### Fingerspot Revo WFV-208BNC+ (mode Internet / FkWeb)
+
+1. Di mesin: Menu > Jaringan. Pilih Mode **Internet**, isi **Server IP** = IP komputer server ini, **Server Port** = `8013`, **Server Req** = `Ya`. Simpan lalu restart mesin bila perlu.
+2. Di aplikasi: menu Perangkat > Tambah Perangkat > pilih model **Fingerspot Revo WFV-208BNC+**. Protokol `fkweb-http` dan port `8013` terisi otomatis.
+3. Serial Number / Cloud ID boleh dikosongkan; terisi otomatis dari header `dev_id` saat mesin pertama terhubung.
+4. Pastikan PIN karyawan di mesin sama dengan kolom **PIN Mesin** di data karyawan. PIN yang tidak cocok tetap tersimpan sebagai log mentah `unmatched`.
+5. FkWeb tidak memakai autentikasi. Batasi port `8013` lewat firewall/LAN. Log baru masuk otomatis; tombol Sync menarik seluruh log lama via `GET_LOG_DATA`.
 
 ## Backup & restore database (khusus admin)
 
@@ -317,6 +327,6 @@ Daftar lengkap: lihat `src/routes/*.js`.
 
 1. `NODE_ENV=production`, `JWT_SECRET` acak >= 32 char
 2. Ganti password `admin` (default `admin123`)
-3. Batasi akses port `3001` hanya dari IP mesin
+3. Batasi akses port `3001` dan `8013` hanya dari IP mesin
 4. Jalankan di balik reverse proxy + backup DB rutin
 5. Nyalakan auto-sync (`SYNC_ENABLED=true` / tombol Perangkat) hanya bila mesin stabil di LAN

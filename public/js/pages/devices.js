@@ -160,6 +160,7 @@
     if (protocols && protocols.push) {
       var alert = document.getElementById('devAlert');
       alert.innerHTML = pushHint(protocols.push);
+      if (protocols.fkweb) alert.innerHTML += fkwebHint(protocols.fkweb);
     }
 
     var columns = [
@@ -261,6 +262,7 @@
     var map = {
       'zkteco-tcp': 'ZKTeco TCP (4370)',
       'push-http': 'PUSH HTTP (ADMS)',
+      'fkweb-http': 'Fingerspot FkWeb (Internet)',
       'csv': 'Impor File',
     };
     return map[key] || key;
@@ -288,6 +290,7 @@
     return [
       { id: 'generic-zkteco', brand: 'Umum', model: 'ZKTeco-compatible', protocol: 'zkteco-tcp', port: 4370, notes: '' },
       { id: 'fingerspot-all-series', brand: 'Fingerspot', model: 'All Series', protocol: 'zkteco-tcp', port: 4370, notes: '', setup: fallbacks['fingerspot-all-series'] },
+      { id: 'fingerspot-revo-wfv-208bnc', brand: 'Fingerspot', model: 'Revo WFV-208BNC+', protocol: 'fkweb-http', port: 8013, notes: 'Mode Internet / FkWeb.' },
       { id: 'solution-all-series', brand: 'Solution', model: 'All Series', protocol: 'zkteco-tcp', port: 4370, notes: '', setup: fallbacks['solution-all-series'] },
     ];
   }
@@ -358,6 +361,18 @@
     box.innerHTML = html;
   }
 
+  function fkwebHint(fkweb) {
+    return '<div class="card"><div class="card-body">' +
+      '<div class="callout"><strong>Setup Fingerspot Revo mode Internet (FkWeb)</strong>' +
+      'Di mesin: Menu > Jaringan, pilih Mode <strong>Internet</strong>, lalu isi:<br>' +
+      'Server IP: <code>' + esc(fkweb.server_address_hint) + '</code> &nbsp; ' +
+      'Server Port: <code>' + esc(fkweb.port) + '</code> &nbsp; Server Req: <code>Ya</code><br>' +
+      'PIN mesin harus sama dengan PIN Mesin karyawan. FkWeb tanpa autentikasi - batasi port ' +
+      esc(fkweb.port) + ' lewat firewall/LAN.' +
+      '</div>' +
+    '</div></div>';
+  }
+
   function pushHint(push) {
     return '<div class="card"><div class="card-body">' +
       '<div class="callout"><strong>Setup mesin mode PUSH / ADMS</strong>' +
@@ -386,7 +401,9 @@
       if (protoOptions[si].key === currentProto) selected = protoOptions[si];
     }
     if (!selected) selected = protoOptions[0] || { key: currentProto, label: currentProto, hint: '' };
-    var defaultPorts = { 'zkteco-tcp': 4370, 'push-http': 3001, 'csv': 0 };
+    var defaultPorts = { 'zkteco-tcp': 4370, 'push-http': 3001, 'fkweb-http': 8013, 'csv': 0 };
+    if (protocols && protocols.fkweb && protocols.fkweb.port) defaultPorts['fkweb-http'] = protocols.fkweb.port;
+    if (protocols && protocols.push && protocols.push.port) defaultPorts['push-http'] = protocols.push.port;
 
     App.modal({
       title: isEdit ? 'Ubah Perangkat: ' + device.name : 'Tambah Perangkat Fingerprint',
@@ -431,8 +448,8 @@
           '</div>' +
           '<div class="field">' +
             '<label>Serial Number (opsional)</label>' +
-            '<input type="text" id="dSerial" value="' + esc(isEdit ? device.serial_number || '' : '') + '" placeholder="Otomatis terisi saat handshake PUSH">' +
-            '<span class="help">Untuk mode PUSH, terisi otomatis dari SN mesin.</span>' +
+            '<input type="text" id="dSerial" value="' + esc(isEdit ? device.serial_number || '' : '') + '" placeholder="SN / Cloud ID (opsional)">' +
+            '<span class="help">Untuk PUSH / FkWeb, terisi otomatis dari SN / Cloud ID mesin.</span>' +
           '</div>' +
         '</div>' +
 

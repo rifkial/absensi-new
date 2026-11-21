@@ -1,5 +1,7 @@
 'use strict';
 
+const config = require('../config');
+
 /**
  * Katalog model mesin fingerprint yang sudah dikenal.
  *
@@ -30,7 +32,7 @@ const MODELS = [
     notes:
       'Semua seri Fingerspot (Revo, Solution, X-Series, Neos, dsb) kompatibel ZKTeco. ' +
       'Tarik via TCP 4370 atau mode PUSH/ADMS ke server ini.',
-    also_supports: ['push-http'],
+    also_supports: ['push-http', 'fkweb-http'],
     // Panduan pengaturan di sisi MESIN (bukan di aplikasi ini).
     setup: [
       {
@@ -64,6 +66,47 @@ const MODELS = [
           'Untuk mode PUSH, pastikan firewall server mengizinkan port 3001.',
           'PIN karyawan di mesin harus sama dengan kolom "PIN Mesin" di data karyawan.',
           'Bila seri lama tanpa menu ADMS / Cloud, pakai Cara 1 (TCP) atau unduh log via USB lalu impor menu Impor File.',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'fingerspot-revo-wfv-208bnc',
+    brand: 'Fingerspot',
+    model: 'Revo WFV-208BNC+',
+    protocol: 'fkweb-http',
+    port: config.server.fkwebPort,
+    connection: 'WiFi / Internet (FkWeb)',
+    notes:
+      'Revo WFV-208BNC+ memakai mode Internet/FkWeb: mesin mengirim absensi ke server. ' +
+      'PIN mesin harus sama dengan PIN Mesin karyawan.',
+    setup: [
+      {
+        title: 'Setting di mesin (mode Internet / FkWeb)',
+        steps: [
+          'Di mesin: Menu > Jaringan / Network.',
+          'Mode: Internet (bukan Lokal).',
+          'Server IP: IP komputer server ini (lihat petunjuk di halaman Perangkat).',
+          `Server Port: ${config.server.fkwebPort}.`,
+          'Server Req: Ya.',
+          'Simpan, lalu restart mesin bila perlu.',
+        ],
+      },
+      {
+        title: 'Setting di aplikasi',
+        steps: [
+          'Tambah Perangkat, pilih model "Fingerspot Revo WFV-208BNC+".',
+          `Protokol otomatis "Fingerspot FkWeb (Internet)", port ${config.server.fkwebPort}.`,
+          'Serial Number / Cloud ID boleh dikosongkan; terisi otomatis saat mesin terhubung.',
+          'Pastikan PIN karyawan di mesin sama dengan kolom "PIN Mesin" di data karyawan.',
+        ],
+      },
+      {
+        title: 'Catatan',
+        steps: [
+          `FkWeb tidak memakai autentikasi. Batasi port ${config.server.fkwebPort} lewat firewall/LAN.`,
+          'Server dan mesin harus bisa saling menjangkau (satu jaringan atau VPN).',
+          'Mesin mengirim log lama yang belum pernah dijawab OK; data duplikat diabaikan.',
         ],
       },
     ],
@@ -114,6 +157,7 @@ const MODELS = [
 function defaultPort(protocol) {
   if (protocol === 'zkteco-tcp') return 4370;
   if (protocol === 'push-http') return 3001;
+  if (protocol === 'fkweb-http') return config.server.fkwebPort;
   return 0;
 }
 

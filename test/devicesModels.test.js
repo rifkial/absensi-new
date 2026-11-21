@@ -12,6 +12,7 @@ const assert = require('node:assert/strict');
 
 const { listModels, defaultPort } = require('../src/devices/models');
 const { hasAdapter } = require('../src/devices');
+const config = require('../src/config');
 
 test('katalog memuat Fingerspot All Series', () => {
   const model = listModels().find((m) => m.id === 'fingerspot-all-series');
@@ -20,6 +21,14 @@ test('katalog memuat Fingerspot All Series', () => {
   assert.equal(model.model, 'All Series');
   assert.equal(model.protocol, 'zkteco-tcp');
   assert.equal(model.port, 4370);
+});
+
+test('katalog memuat Fingerspot Revo WFV-208BNC+ (FkWeb)', () => {
+  const model = listModels().find((m) => m.id === 'fingerspot-revo-wfv-208bnc');
+  assert.ok(model, 'model Revo WFV-208BNC+ harus ada di katalog');
+  assert.equal(model.brand, 'Fingerspot');
+  assert.equal(model.protocol, 'fkweb-http');
+  assert.equal(model.port, config.server.fkwebPort);
 });
 
 test('katalog memuat Solution All Series', () => {
@@ -54,4 +63,5 @@ test('setiap model dengan panduan setup punya struktur valid', () => {
 test('defaultPort memetakan protokol yang dikenal', () => {
   assert.equal(defaultPort('zkteco-tcp'), 4370);
   assert.equal(defaultPort('push-http'), 3001);
+  assert.equal(defaultPort('fkweb-http'), config.server.fkwebPort);
 });

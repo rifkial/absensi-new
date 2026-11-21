@@ -195,12 +195,13 @@ CREATE TABLE IF NOT EXISTS reimburses (
 -- 8. Perangkat fingerprint
 --    protocol: 'zkteco-tcp'  -> polling TCP (port 4370)
 --              'push-http'   -> mesin PUSH ke server (ADMS/icLock HTTP)
+--              'fkweb-http'  -> Fingerspot Revo mode Internet (FkWeb HTTP)
 --              'csv'         -> impor manual file
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS devices (
   id                INT UNSIGNED NOT NULL AUTO_INCREMENT,
   name              VARCHAR(100) NOT NULL,
-  protocol          ENUM('zkteco-tcp','push-http','csv') NOT NULL DEFAULT 'zkteco-tcp',
+  protocol          ENUM('zkteco-tcp','push-http','fkweb-http','csv') NOT NULL DEFAULT 'zkteco-tcp',
   ip_address        VARCHAR(45)  NULL,
   port              SMALLINT UNSIGNED NOT NULL DEFAULT 4370,
   location          VARCHAR(150) NULL,

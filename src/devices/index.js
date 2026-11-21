@@ -2,6 +2,7 @@
 
 const { adapter: zktecoAdapter } = require('./zkteco4370/adapter');
 const { pushAdapter } = require('./pushhttp/adapter');
+const { fkwebAdapter } = require('./fkweb/adapter');
 const { adapter: csvAdapter } = require('./csv/adapter');
 const models = require('./models');
 
@@ -22,6 +23,7 @@ const models = require('./models');
 const ADAPTERS = new Map([
   [zktecoAdapter.protocol, zktecoAdapter],
   [pushAdapter.protocol, pushAdapter],
+  [fkwebAdapter.protocol, fkwebAdapter],
   [csvAdapter.protocol, csvAdapter],
 ]);
 
@@ -57,5 +59,6 @@ module.exports = {
   defaultPort: models.defaultPort,
   zktecoAdapter,
   pushAdapter,
+  fkwebAdapter,
   csvAdapter,
 };

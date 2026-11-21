@@ -4,6 +4,7 @@ const config = require('./config');
 const db = require('./db/pool');
 const { createApp } = require('./app');
 const { createPushRouter } = require('./devices/pushhttp/adapter');
+const { createFkwebRouter } = require('./devices/fkweb/router');
 const sync = require('./services/sync');
 const realtime = require('./services/realtime');
 const { assertProductionReady } = require('./utils/errors');
@@ -11,16 +12,17 @@ const { assertProductionReady } = require('./utils/errors');
 /**
  * Titik masuk server.
  *
- * Dua listener HTTP:
+ * Tiga listener HTTP:
  *   - port 3000 : UI + REST API
  *   - port 3001 : protokol PUSH/ADMS untuk mesin fingerprint
+ *   - port 8013 : protokol FkWeb untuk Fingerspot Revo mode Internet
  *
- * Keduanya bisa dimatikan lewat .env (PUSH_PORT dikosongkan tidak didukung,
- * tapi tetap bisa dibuat sama dengan port utama bila diinginkan).
+ * Port bisa diubah lewat .env (PUSH_PORT, FKWEB_PORT).
  */
 
 let mainServer = null;
 let pushServer = null;
+let fkwebServer = null;
 let shuttingDown = false;
 
 async function start() {
@@ -73,8 +75,9 @@ async function start() {
     throw err;
   });
 
-  // 4) Server PUSH untuk mesin fingerprint.
+  // 4) Server PUSH + FkWeb untuk mesin fingerprint.
   startPushServer();
+  startFkwebServer();
 
   // 5) Penjadwal sinkronisasi otomatis (MATI default via SYNC_ENABLED=false).
   if (config.device.syncEnabled) {
@@ -153,6 +156,44 @@ function startPushServer() {
   });
 }
 
+function startFkwebServer() {
+  const port = config.server.fkwebPort;
+  if (!port) return;
+
+  if (port === config.server.port || port === config.server.pushPort) {
+    console.warn(
+      `  [PERINGATAN] FKWEB_PORT ${port} bentrok dengan port lain. Server FkWeb tidak dinyalakan; ` +
+      'ubah FKWEB_PORT di .env.'
+    );
+    return;
+  }
+
+  const express = require('express');
+  const fkwebApp = express();
+  fkwebApp.disable('x-powered-by');
+  fkwebApp.set('trust proxy', true);
+  fkwebApp.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+  });
+  fkwebApp.use(createFkwebRouter());
+
+  fkwebServer = fkwebApp.listen(port, config.server.host, () => {
+    const hint = require('./devices/fkweb/adapter').getLocalAddressHint();
+    console.log(`  FkWeb     : port ${port} (isi Server IP ${hint}, Server Req = Ya di mesin Revo)`);
+  });
+  trackConnections(fkwebServer);
+
+  fkwebServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`\n  [PERINGATAN] Port FkWeb ${port} sudah dipakai.`);
+      console.warn('  Mesin Fingerspot Revo mode Internet tidak akan bisa terhubung. Ubah FKWEB_PORT di .env.\n');
+    } else {
+      console.error('[FkWeb] Error server:', err.message);
+    }
+  });
+}
+
 /** Lacak socket terbuka supaya shutdown bisa menghancurkan sisa koneksi. */
 const openSockets = new Set();
 
@@ -202,6 +243,7 @@ async function shutdown(signal) {
 
   await closeServer(mainServer);
   await closeServer(pushServer);
+  await closeServer(fkwebServer);
   await db.closePool().catch(() => {});
 
   console.log('[shutdown] Selesai.');

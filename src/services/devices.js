@@ -124,7 +124,13 @@ async function create(payload) {
     throw badRequest('ip_address wajib diisi untuk protokol zkteco-tcp.');
   }
   if (!data.port) {
-    data.port = data.protocol === 'zkteco-tcp' ? 4370 : data.protocol === 'push-http' ? 3001 : 0;
+    data.port = data.protocol === 'zkteco-tcp'
+      ? 4370
+      : data.protocol === 'push-http'
+        ? 3001
+        : data.protocol === 'fkweb-http'
+          ? config.server.fkwebPort
+          : 0;
   }
   data.is_active = data.is_active ?? 1;
   data.auto_sync = data.auto_sync ?? 1;

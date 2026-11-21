@@ -36,6 +36,10 @@ router.get(
           server_address_hint: getLocalAddressHint(),
           auth_token_required: Boolean(config.device.pushAuthToken),
         },
+        fkweb: {
+          port: config.server.fkwebPort,
+          server_address_hint: getLocalAddressHint(),
+        },
       },
     });
   })

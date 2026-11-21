@@ -63,6 +63,7 @@ const config = {
     host: str('HOST', '0.0.0.0'),
     publicDir: str('PUBLIC_DIR', 'public'),
     pushPort: int('PUSH_PORT', 3001),
+    fkwebPort: int('FKWEB_PORT', 8013),
     // Di produksi server harus menerima koneksi mesin PUSH dari luar (port berbeda)
     bodyLimit: '25mb',
   },
